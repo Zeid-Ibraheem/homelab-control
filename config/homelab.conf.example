@@ -1,0 +1,40 @@
+# =============================================================================
+# homelab.conf.example : MODÈLE de configuration, avec des valeurs FICTIVES.
+#
+# Installation, sur le serveur ET sur la tour :
+#   sudo install -d -m 755 /etc/homelab
+#   sudo install -m 640 config/homelab.conf.example /etc/homelab/homelab.conf
+#   sudoedit /etc/homelab/homelab.conf     # puis remplacer chaque valeur
+#
+# Le fichier réel ne doit JAMAIS entrer dans le dépôt : il est ignoré par Git
+# et bloqué par scripts/check-public.sh.
+#
+# Format : variables shell (NOM="valeur"), lues par les scripts avec « source ».
+# Les adresses 192.0.2.x sont réservées à la documentation (RFC 5737).
+# =============================================================================
+
+# ── Machines ─────────────────────────────────────────────────────────────────
+SERVER_HOST="mon-serveur"          # nom du serveur (toujours allumé) sur le VPN
+SERVER_USER="utilisateur"          # compte utilisé sur le serveur
+TOWER_HOST="ma-tour"               # nom de la tour sur le VPN
+TOWER_USER="utilisateur"           # compte utilisé sur la tour
+
+# ── Lien direct serveur ↔ tour (câble Ethernet) ─────────────────────────────
+LINK_INTERFACE="enx000000000000"   # carte réseau du serveur reliée à la tour
+LINK_SERVER_IP="192.0.2.1"         # adresse du serveur sur le câble
+LINK_TOWER_IP="192.0.2.2"          # adresse de la tour sur le câble
+TOWER_MAC="AA:BB:CC:DD:EE:FF"      # MAC de la carte Ethernet de la tour (réveil)
+
+# ── Extinction automatique de la tour ───────────────────────────────────────
+AUTO_OFF_DEFAULT_HOURS=8           # durée accordée à chaque allumage
+AUTO_OFF_EXTEND_HOURS=2            # durée ajoutée par « prolonger »
+AUTO_OFF_MAX_HOURS=48              # plafond absolu, même avec « ne pas éteindre »
+
+# ── Surveillance ────────────────────────────────────────────────────────────
+SERVER_SERVICES="ssh tailscaled NetworkManager"   # services suivis sur le serveur
+TOWER_SERVICES="sshd tailscaled NetworkManager"   # services suivis sur la tour
+SERVER_SMART_DEVICES="/dev/nvme0n1"               # disques dont on lit la santé
+TOWER_SMART_DEVICES="/dev/nvme0n1 /dev/sda"
+
+# ── Journal des actions ─────────────────────────────────────────────────────
+ACTION_LOG="/var/log/homelab/actions.log"

@@ -1,0 +1,10 @@
+# Configuration de gitleaks : détection des secrets génériques
+# (mots de passe, jetons, clés d'API…) avec les règles par défaut de gitleaks.
+#
+# Les données propres à l'installation (liste noire, adresses MAC, adresses du
+# VPN) sont vérifiées par scripts/check-public.sh.
+
+title = "homelab-control"
+
+[extend]
+useDefault = true

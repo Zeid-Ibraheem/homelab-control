@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Avant chaque commit : données personnelles (liste noire, adresses MAC,
+# adresses du VPN, fichiers sensibles) puis secrets génériques (gitleaks).
+set -euo pipefail
+ROOT=$(git rev-parse --show-toplevel)
+"$ROOT/scripts/check-public.sh" --staged --require-blacklist
+"$ROOT/scripts/gitleaks-scan.sh" staged

@@ -1,0 +1,7 @@
+# Fins de ligne Unix partout : indispensable pour les scripts shell.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary

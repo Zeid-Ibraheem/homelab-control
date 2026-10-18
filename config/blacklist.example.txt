@@ -1,0 +1,22 @@
+# =============================================================================
+# Liste noire personnelle : MODÈLE, avec des valeurs FICTIVES.
+#
+# Le fichier RÉEL vit HORS du dépôt :
+#   ~/.config/homelab/blacklist.txt   (droits 600)
+# ou au chemin indiqué par la variable d'environnement HOMELAB_BLACKLIST.
+# scripts/install-hooks.sh le crée pour toi.
+#
+# Règles :
+#  - un terme par ligne ; les lignes vides et celles commençant par # sont ignorées ;
+#  - recherche insensible à la casse, en MOT ENTIER (« srv » ne bloque pas « srvx ») ;
+#  - 3 caractères minimum ;
+#  - mets-y tes IDENTIFIANTS : noms des machines, noms d'utilisateur, adresse MAC,
+#    noms des cartes réseau, identifiant universitaire, e-mail personnel,
+#    adresses VPN, nom du réseau Wi-Fi…
+#  - JAMAIS de mot de passe : ce fichier deviendrait lui-même une fuite.
+# =============================================================================
+mon-serveur
+ma-tour
+mon-utilisateur
+enx0123456789ab
+prenom.nom@example.org

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Sur chaque message de commit : aucune donnée personnelle dans le texte.
+set -euo pipefail
+ROOT=$(git rev-parse --show-toplevel)
+exec "$ROOT/scripts/check-public.sh" --message "$1" --require-blacklist

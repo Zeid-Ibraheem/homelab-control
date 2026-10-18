@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Avant chaque push : TOUT l'historique, ce qui rattrape aussi un commit
+# fait avec « git commit --no-verify ».
+set -euo pipefail
+ROOT=$(git rev-parse --show-toplevel)
+"$ROOT/scripts/check-public.sh" --history --require-blacklist
+"$ROOT/scripts/gitleaks-scan.sh" history

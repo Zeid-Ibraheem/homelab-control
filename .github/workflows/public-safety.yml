@@ -1,0 +1,37 @@
+# Vérifie à chaque push que l'historique ne contient aucune donnée personnelle.
+# La liste noire est fournie par le secret du dépôt HOMELAB_BLACKLIST :
+#   gh secret set HOMELAB_BLACKLIST < ~/.config/homelab/blacklist.txt
+# Le script n'affiche jamais le contenu des lignes trouvées (CI=true).
+name: Vérification avant publication
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-public:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer tout l'historique
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Préparer la liste noire
+        env:
+          BLACKLIST: ${{ secrets.HOMELAB_BLACKLIST }}
+        run: |
+          if [ -n "$BLACKLIST" ]; then
+            umask 077
+            printf '%s\n' "$BLACKLIST" > "$RUNNER_TEMP/blacklist.txt"
+            echo "HOMELAB_BLACKLIST=$RUNNER_TEMP/blacklist.txt" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Secret HOMELAB_BLACKLIST absent : seules les vérifications génériques sont faites."
+          fi
+
+      - name: Vérifier tout l'historique
+        run: bash scripts/check-public.sh --history

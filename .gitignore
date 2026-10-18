@@ -1,0 +1,55 @@
+# =============================================================================
+# Ce que Git doit ignorer. Premier verrou : la configuration réelle, les clés
+# et les journaux ne doivent jamais pouvoir être ajoutés par erreur.
+# (scripts/check-public.sh les bloque aussi, même avec « git add -f ».)
+# =============================================================================
+
+# ── Configuration réelle et secrets ───────────────────────────────────────
+config/*.conf
+homelab.conf
+*.local
+.env
+.env.*
+!.env.example
+blacklist*.txt
+!config/blacklist.example.txt
+secrets/
+private/
+
+# ── Clés, certificats, coffres de mots de passe ──────────────────────────
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+*.ovpn
+authorized_keys*
+known_hosts*
+*.nmconnection
+
+# ── Journaux et enregistrements ───────────────────────────────────────────
+*.log
+logs/
+
+# ── Flutter / Dart ────────────────────────────────────────────────────────
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+key.properties
+local.properties
+*.jks
+*.keystore
+**/ios/Flutter/Generated.xcconfig
+
+# ── Éditeurs et système ───────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
