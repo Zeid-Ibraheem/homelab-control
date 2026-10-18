@@ -67,7 +67,7 @@ Chaque phase a un critère de fin vérifiable.
 | **0** ✅ | Squelette du dépôt, verrous de publication | Un commit contenant une donnée de la liste noire, une adresse MAC ou une clé est bloqué |
 | **1** ✅ | Script `homelab` sur le serveur : compte dédié, actions `status`, `wake`, `log`, état en JSON, journal (voir [`server/README.md`](../server/README.md)) | Depuis un terminal du téléphone : allumer la tour, lire l'état, consulter le journal |
 | **2** ✅ | Script `tour`, extinction automatique (repoussée tant que la tour est utilisée), relais du serveur vers la tour (câble, puis VPN en secours), allumage programmé, `sudoers` limité (voir [`tower/README.md`](../tower/README.md)) | La tour s'éteint seule à l'échéance, même si le serveur et le téléphone sont hors ligne |
-| **3** | Application minimale : verrou biométrique, tableau de bord, boutons principaux | Allumer, éteindre et prolonger depuis l'application |
+| **3** 🚧 | Application minimale : verrou (empreinte ou code), clé SSH créée sur le téléphone, vérification de la clé du serveur, tableau de bord, boutons principaux, journal (voir [`app/README.md`](../app/README.md)) | Allumer, éteindre et prolonger depuis l'application |
 | **4** | Surveillance complète : disques, services, sécurité | Tous les indicateurs visibles dans l'application |
 | **5** | Terminal intégré | Session interactive vers chaque machine depuis l'application |
 | **6** | Webcam par tunnel SSH, affichage des allumages programmés | Flux visible, serveur vidéo en écoute locale uniquement |
@@ -114,6 +114,6 @@ Codes de sortie : 0 = ok, 1 = échec, 2 = commande refusée.
 
 ## Points à vérifier pendant le développement
 
-- Stockage des clés SSH dans la puce de sécurité du téléphone (StrongBox) : compatibilité avec dartssh2 à confirmer. Solution de repli : clé chiffrée par un code, avec une dérivation résistante aux essais en masse.
+- Clé SSH de l'application : créée sur le téléphone, gardée dans le stockage chiffré d'Android (clé de chiffrement dans le Keystore). Possible amélioration : une clé liée à l'empreinte elle-même (déchiffrable seulement après le capteur), si une bibliothèque fiable le permet.
 - Valeurs de l'extinction automatique (8 h, +2 h, plafond de 48 h, délai de 30 min devant la tour) : réglables dans la configuration.
 - Détection du verrouillage de l'écran par KDE (`LockedHint`) : à vérifier une fois sur la tour (procédure dans [`tower/README.md`](../tower/README.md#à-vérifier-une-fois-sur-la-tour)).

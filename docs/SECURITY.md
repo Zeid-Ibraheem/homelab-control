@@ -10,8 +10,8 @@ Ce dépôt applique le **principe de Kerckhoffs** : un système doit rester sûr
 |---|---|
 | Quelqu'un lit le code public | Le code ne contient ni secret ni identifiant : il ne donne aucun accès |
 | Une donnée part sur GitHub par erreur | Les quatre verrous décrits plus bas |
-| Écoute du réseau | Tout passe par SSH, chiffré, à l'intérieur d'un VPN. Aucun service en clair |
-| Vol du téléphone | Application verrouillée par l'empreinte digitale, clés dans le stockage sécurisé d'Android, révocation des clés |
+| Écoute du réseau | Tout passe par SSH, chiffré, à l'intérieur d'un VPN. Aucun service en clair. L'application vérifie la clé du serveur à chaque connexion |
+| Vol du téléphone | Application verrouillée (empreinte ou code) au démarrage et après 1 min en arrière-plan, clé créée sur le téléphone et gardée chiffrée par le Keystore d'Android, sauvegardes désactivées, révocation de la clé sur le serveur |
 | Vol de la clé « actions » | Compte dédié sans droits, commande forcée par la clé **et** par SSH, liste fermée d'actions aux arguments vérifiés, clé acceptée seulement depuis le VPN. Détail : [`server/README.md`](../server/README.md) |
 | Commande piégée envoyée au script | Le texte reçu n'est jamais exécuté : caractères limités, longueur limitée, comparaison à une liste fermée, refus journalisé |
 | Configuration modifiée pour injecter une commande | Elle appartient à root, elle est lue sans être exécutée, et chaque valeur est validée avant usage |

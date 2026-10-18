@@ -1,0 +1,36 @@
+# Vérifie l'application à chaque modification : analyse du code et tests.
+# Aucun secret n'est utilisé, et rien n'est construit ni signé ici : l'APK se
+# construit sur ta propre machine (voir app/README.md).
+name: Application
+
+on:
+  push:
+    paths: ['app/**', '.github/workflows/app.yml']
+  pull_request:
+    paths: ['app/**', '.github/workflows/app.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Flutter depuis son dépôt officiel, sans action tierce.
+      - name: Installer Flutter (canal stable)
+        working-directory: .
+        run: |
+          git clone --depth 1 --branch stable https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - run: flutter --version
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test

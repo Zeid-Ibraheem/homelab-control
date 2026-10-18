@@ -31,8 +31,10 @@ Le serveur joint la tour par le câble direct s'il répond, sinon par le VPN, to
 Sur la machine où se trouve le dépôt, copier vers le serveur **uniquement les fichiers commités** (donc déjà vérifiés par les verrous) :
 
 ```bash
-git archive HEAD | ssh utilisateur@serveur 'mkdir -p ~/homelab-control && tar -x -C ~/homelab-control'
+git archive HEAD | ssh utilisateur@serveur 'rm -rf ~/hl-new && mkdir ~/hl-new && tar -x -C ~/hl-new && rm -rf ~/homelab-control && mv ~/hl-new ~/homelab-control'
 ```
+
+L'ancienne copie n'est remplacée que si l'archive est arrivée en entier. Coller une commande à la fois : quand plusieurs lignes sont collées d'un coup, les suivantes peuvent être lues par la commande en cours (par exemple une demande de mot de passe).
 
 Sur le serveur :
 
@@ -48,7 +50,9 @@ Puis autoriser la clé « actions » du téléphone (voir ci-dessous).
 
 ## Clé « actions » du téléphone
 
-Dans le terminal du téléphone, créer une clé **dédiée** :
+L'**application** crée sa propre clé et affiche la commande `add-key` à lancer (voir [`app/README.md`](../app/README.md)). Pour un **terminal** sur le téléphone (Termux…), créer une autre clé, dédiée : chaque appareil a la sienne, et chacune se retire séparément.
+
+Dans le terminal du téléphone :
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/homelab_actions -C telephone-actions

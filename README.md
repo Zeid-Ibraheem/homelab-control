@@ -3,9 +3,10 @@
 Application mobile et scripts pour piloter un petit homelab depuis un téléphone :
 allumer et éteindre une tour, suivre l'état des machines, ouvrir un terminal.
 
-> **Statut : phase 2.** Depuis un terminal, par SSH : allumer, éteindre et
-> redémarrer la tour, programmer son allumage, suivre son état et son
-> extinction automatique. L'application arrive à la phase 3.
+> **Statut : phase 3 en cours.** Depuis un terminal, par SSH : allumer,
+> éteindre et redémarrer la tour, programmer son allumage, suivre son état et
+> son extinction automatique. L'application Android fait la même chose avec
+> des boutons (à valider sur le téléphone).
 
 ## Ce que fera le projet
 
@@ -37,7 +38,7 @@ Principes :
 
 ```
 homelab-control/
-├── app/        Application Flutter (phase 3)
+├── app/        Application Android (Flutter)
 ├── common/     Bibliothèque commune au serveur et à la tour
 ├── server/     Scripts et services du serveur
 ├── tower/      Scripts et services de la tour
@@ -64,6 +65,7 @@ copié hors du dépôt dans `/etc/homelab/homelab.conf`.
 - [`docs/SECURITY.md`](docs/SECURITY.md) : modèle de sécurité et règles de publication
 - [`server/README.md`](server/README.md) : installation du serveur, actions, allumage programmé
 - [`tower/README.md`](tower/README.md) : installation de la tour, extinction automatique
+- [`app/README.md`](app/README.md) : construction et installation de l'application
 
 ## Licence
 

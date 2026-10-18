@@ -1,7 +1,101 @@
 # app/
 
-Application **Flutter** (à partir de la phase 3).
+Application **Android** (Flutter) : la télécommande du homelab (phase 3).
 
-À venir : verrou par empreinte digitale, tableau de bord, boutons d'action, puis surveillance, terminal et webcam.
+Elle ne parle qu'au serveur, en SSH, avec sa propre clé ; le serveur relaie vers la tour. Tout ce qu'elle fait marche aussi depuis un terminal (`ssh hl …`, voir [`server/README.md`](../server/README.md)).
 
-L'application ne contient aucune adresse ni aucune clé : elles sont saisies au premier lancement et stockées chiffrées sur le téléphone.
+## Ce qu'elle fait
+
+- **Tableau de bord** : état du serveur (temps depuis l'allumage, processeur, mémoire, température, disque, batterie, câble vers la tour) et de la tour (allumée ou non, par le câble ou par le VPN, températures, échéance de l'extinction automatique, « ne pas éteindre », session ouverte devant la tour, tâche en cours).
+- **Boutons** : allumer, prolonger (1, 2, 4 ou 8 h), éteindre dans… (15 min à 2 h), ne pas éteindre, redémarrer, éteindre. Redémarrer et éteindre demandent une confirmation.
+- **Journal** des actions du serveur (réveils, extinctions, commandes refusées…).
+- L'état est relu toutes les 30 s quand l'application est ouverte, et toutes les 5 s pendant 2 min après un allumage. Rien ne tourne en arrière-plan.
+
+## Sécurité
+
+| Mesure | Détail |
+|---|---|
+| Clé propre à l'application | Clé SSH Ed25519 créée **sur le téléphone**, à partir du générateur aléatoire cryptographique du système. La partie privée ne le quitte jamais : seule la partie publique est affichée, et les sauvegardes Android de l'application sont désactivées |
+| Stockage chiffré | La clé et les réglages sont chiffrés par une clé gardée dans le Keystore d'Android, protégé par le matériel du téléphone : elle ne peut pas en être extraite |
+| Verrou | Empreinte ou code du téléphone au démarrage, puis après 1 minute en arrière-plan. Tant que l'application est verrouillée, rien n'est chargé en mémoire |
+| Serveur vérifié | À la première connexion, tu compares l'empreinte de la clé du serveur avec celle qu'affiche `ssh-keygen` sur le serveur. Ensuite, toute connexion qui présente une autre clé est refusée : personne ne peut se faire passer pour le serveur |
+| Droits limités | Côté serveur, c'est une clé « actions » comme les autres : compte `homelab`, commande forcée, liste fermée d'actions, acceptée seulement depuis le VPN. L'application ne fabrique d'ailleurs que ces commandes |
+| Réseau | Aucune autre connexion : ni service tiers, ni statistiques, ni services Google |
+| Révocation | Retirer la ligne qui finit par `homelab-app` de `/var/lib/homelab/.ssh/authorized_keys` sur le serveur |
+
+## Construire l'application
+
+L'APK se construit sur ta machine : aucun service extérieur, et la signature reste chez toi. Exemple sur Arch, à faire une fois :
+
+```bash
+sudo pacman -S --needed git unzip jdk17-openjdk
+git clone --depth 1 -b stable https://github.com/flutter/flutter.git ~/.local/share/flutter
+echo 'export PATH="$HOME/.local/share/flutter/bin:$PATH"' >> ~/.bashrc
+```
+
+Puis les outils Android en ligne de commande : sur la page de téléchargement d'Android Studio, partie *Command line tools only*, prendre le fichier `commandlinetools-linux-…_latest.zip`, et :
+
+```bash
+mkdir -p ~/Android/Sdk/cmdline-tools
+unzip ~/Downloads/commandlinetools-linux-*_latest.zip -d ~/Android/Sdk/cmdline-tools
+mv ~/Android/Sdk/cmdline-tools/cmdline-tools ~/Android/Sdk/cmdline-tools/latest
+exec bash                                   # recharge le terminal (Flutter dans le PATH)
+flutter config --android-sdk ~/Android/Sdk --jdk-dir /usr/lib/jvm/java-17-openjdk
+flutter doctor --android-licenses           # accepter les licences
+flutter doctor                              # la ligne « Android toolchain » doit être cochée
+```
+
+Construire :
+
+```bash
+cd app
+# Une seule fois : crée les fichiers Android manquants (ceux du dépôt sont gardés).
+flutter create --platforms=android --org dev.homelab --project-name homelab_control .
+flutter pub get
+flutter test
+flutter build apk --release
+```
+
+L'APK se trouve dans `build/app/outputs/flutter-apk/app-release.apk`. Les fichiers créés par `flutter create` (dossier `android/`, `pubspec.lock`, `.metadata`) peuvent être commités : ils ne contiennent rien de personnel, et les fichiers locaux (`local.properties`, `build/`) sont ignorés par Git.
+
+**Signature** : l'APK est signé avec la clé de développement de ta machine (`~/.android/debug.keystore`). Garde ce fichier (et sauvegarde-le) : une mise à jour signée par une autre clé ne s'installe pas par-dessus, il faudrait désinstaller l'application et donc recréer sa clé SSH.
+
+## Installer sur le téléphone
+
+- **Par câble** (le plus simple pour les mises à jour) : activer les options pour les développeurs et le débogage USB sur le téléphone, le brancher, puis `~/Android/Sdk/platform-tools/adb install -r build/app/outputs/flutter-apk/app-release.apk` (`platform-tools` s'installe avec `~/Android/Sdk/cmdline-tools/latest/bin/sdkmanager platform-tools`).
+- **Par fichier** : copier l'APK sur le téléphone et l'ouvrir avec l'application Fichiers, en autorisant l'installation depuis cette source.
+
+Pour une mise à jour : `git pull`, `flutter build apk --release`, puis la même commande `adb install -r` : la clé et les réglages sont conservés.
+
+## Première utilisation
+
+1. Ouvrir l'application et la déverrouiller (empreinte ou code du téléphone).
+2. **Créer la clé** : l'application affiche la commande qui l'autorise sur le serveur. La copier, puis la lancer sur le serveur (par exemple dans Termux, connecté en SSH avec ton compte habituel).
+3. Saisir l'adresse du serveur (son nom sur le VPN, ou son adresse en `100.x.y.z`), le port (22) et le compte (`homelab`).
+4. **Se connecter** : l'application affiche l'empreinte de la clé du serveur et la commande `ssh-keygen` à lancer sur le serveur pour l'afficher aussi. Si les deux sont identiques, appuyer sur **Identique**.
+5. Le tableau de bord s'affiche.
+
+Le VPN doit être actif dans le même profil Android que l'application.
+
+## En cas de problème
+
+| Message | Cause probable |
+|---|---|
+| Serveur « … » injoignable : le VPN est-il actif ? | VPN coupé, ou un autre VPN actif à sa place |
+| Clé refusée par le serveur | Commande `add-key` pas encore lancée sur le serveur, ou `ACTIONS_KEY_FROM` sans la plage IPv4 du VPN |
+| La clé du serveur a changé | Si le serveur a été réinstallé : Réglages, puis « Changer de serveur ». Sinon, **ne pas continuer** : quelqu'un essaie peut-être de se faire passer pour lui |
+| Déverrouillage impossible | Aucun verrouillage d'écran configuré sur le téléphone |
+| Erreur à la compilation | Envoyer la sortie de `flutter analyze` et de `flutter build apk` |
+
+## Organisation du code
+
+| Fichier | Rôle |
+|---|---|
+| `lib/main.dart` | Démarrage, verrou, choix entre configuration et tableau de bord |
+| `lib/src/app_key.dart` | Création de la clé Ed25519 au format OpenSSH |
+| `lib/src/ssh_link.dart` | Connexion SSH, vérification de la clé du serveur |
+| `lib/src/api.dart` | Commandes envoyées et lecture des réponses JSON |
+| `lib/src/store.dart` | Stockage chiffré |
+| `lib/src/lock.dart` | Verrou (empreinte ou code) |
+| `lib/src/*_screen.dart` | Écrans : configuration, tableau de bord, journal, réglages |
+| `test/` | Tests : format de la clé (vecteur de la RFC 8032), lecture des réponses, mise en forme |
