@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# =============================================================================
+# homelab : point d'entrée unique du téléphone vers le serveur.
+#
+# Appelé par SSH avec la clé « actions » (commande forcée). La commande envoyée
+# par le client arrive dans SSH_ORIGINAL_COMMAND : elle n'est JAMAIS exécutée
+# telle quelle, elle est comparée à une liste fermée d'actions.
+#
+# Actions :
+#   status      état du serveur, du lien et de la tour (JSON)
+#   wake        allume la tour (paquet magique par le câble direct)
+#   log [N]     les N dernières actions du journal (1 à 200, défaut 20)
+#   actions     liste des actions disponibles
+#   version     version du script
+#
+# Réponse : une ligne JSON. Code de sortie : 0 = ok, 1 = échec, 2 = refusé.
+# Utilisation locale sur le serveur : sudo -u homelab homelab status
+# =============================================================================
+set -uo pipefail
+umask 027
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+LIB=/usr/local/lib/homelab/lib.sh
+CONF=/etc/homelab/homelab.conf
+STATE_DIR=/var/lib/homelab/state
+ROOT_HELPER=/usr/local/lib/homelab/homelab-root
+
+# En local uniquement (jamais via SSH), les chemins peuvent être changés pour les tests.
+if [ -z "${SSH_CONNECTION:-}" ]; then
+  LIB=${HOMELAB_LIB:-$LIB}
+  CONF=${HOMELAB_CONF:-$CONF}
+  STATE_DIR=${HOMELAB_STATE:-$STATE_DIR}
+fi
+
+# shellcheck source=lib.sh
+. "$LIB" 2>/dev/null || { printf '{"ok":false,"error":"internal","message":"bibliothèque introuvable"}\n'; exit 1; }
+hl_load_conf "$CONF" || { printf '{"ok":false,"error":"config","message":"configuration illisible"}\n'; exit 1; }
+ACTION_LOG=${ACTION_LOG:-/var/log/homelab/actions.log}
+
+# ── Réponses et journal ──────────────────────────────────────────────────────
+fail_json() { # fail_json CODE MESSAGE
+  printf '{"ok":false,"error":%s,"message":%s}\n' "$(hl_json_str "$1")" "$(hl_json_str "$2")"
+  exit 1
+}
+
+sanitize() { printf '%s' "${1:-}" | tr -c 'a-z0-9 -' '?' | cut -c1-40; }
+
+log_action() { # log_action ACTION RÉSULTAT
+  local size
+  [ -n "$ACTION_LOG" ] || return 0
+  if [ -f "$ACTION_LOG" ]; then
+    size=$(stat -c %s "$ACTION_LOG" 2>/dev/null || echo 0)
+    [ "$size" -gt 1048576 ] && mv -f "$ACTION_LOG" "$ACTION_LOG.1" 2>/dev/null
+  fi
+  printf '{"ts":%s,"action":%s,"result":%s,"via":%s,"from":%s}\n' \
+    "$(hl_json_str "$(hl_now)")" "$(hl_json_str "$1")" "$(hl_json_str "$2")" \
+    "$(hl_json_str "$VIA")" "$(hl_json_str "$FROM")" >> "$ACTION_LOG" 2>/dev/null || true
+}
+
+refuse() { # refuse CODE MESSAGE : commande non autorisée, journalisée
+  log_action "$(sanitize "$RAW")" "refused"
+  printf '{"ok":false,"error":%s,"message":%s}\n' "$(hl_json_str "$1")" "$(hl_json_str "$2")"
+  exit 2
+}
+
+# ── Mesures ──────────────────────────────────────────────────────────────────
+cpu_pct() { # occupation du processeur sur 0,3 s, en %
+  local -a a b
+  local k ta=0 tb=0 ia ib
+  read -r -a a < /proc/stat
+  sleep 0.3
+  read -r -a b < /proc/stat
+  for k in 1 2 3 4 5 6 7 8; do
+    ta=$((ta + ${a[k]:-0}))
+    tb=$((tb + ${b[k]:-0}))
+  done
+  ia=$((${a[4]:-0} + ${a[5]:-0}))
+  ib=$((${b[4]:-0} + ${b[5]:-0}))
+  if [ $((tb - ta)) -le 0 ]; then printf 'null'; return; fi
+  hl_fmt1 $((1000 * ((tb - ta) - (ib - ia)) / (tb - ta)))
+}
+
+mem_used_pct() {
+  local k v total="" avail=""
+  while read -r k v _; do
+    case "$k" in
+      MemTotal:)     total=$v ;;
+      MemAvailable:) avail=$v ;;
+    esac
+  done < /proc/meminfo
+  if [ -z "$total" ] || [ -z "$avail" ] || [ "$total" -le 0 ]; then printf 'null'; return; fi
+  hl_fmt1 $((1000 * (total - avail) / total))
+}
+
+temp_c() { # température du processeur, sinon la plus haute zone thermique
+  local z t="" v best=""
+  for z in /sys/class/thermal/thermal_zone*; do
+    [ -r "$z/type" ] && [ -r "$z/temp" ] || continue
+    if [ "$(cat "$z/type")" = "x86_pkg_temp" ]; then t=$(cat "$z/temp"); break; fi
+  done
+  if [ -z "$t" ]; then
+    for z in /sys/class/thermal/thermal_zone*; do
+      v=$(cat "$z/temp" 2>/dev/null) || continue
+      [[ $v =~ ^[0-9]+$ ]] || continue
+      if [ -z "$best" ] || [ "$v" -gt "$best" ]; then best=$v; fi
+    done
+    t=$best
+  fi
+  if [[ ${t:-} =~ ^[0-9]+$ ]]; then hl_fmt1 $((t / 100)); else printf 'null'; fi
+}
+
+disk_used_pct() {
+  local pct=""
+  { read -r _; read -r _ _ _ _ pct _; } < <(df -P / 2>/dev/null)
+  pct=${pct%\%}
+  if [[ $pct =~ ^[0-9]{1,3}$ ]]; then printf '%s' "$pct"; else printf 'null'; fi
+}
+
+power_json() { # batterie et secteur (le serveur est un portable)
+  local p bat="" ac=""
+  for p in /sys/class/power_supply/*; do
+    [ -r "$p/type" ] || continue
+    case "$(cat "$p/type")" in
+      Battery) [ -z "$bat" ] && bat=$(cat "$p/capacity" 2>/dev/null) ;;
+      Mains)   ac=$(cat "$p/online" 2>/dev/null) ;;
+    esac
+  done
+  if [[ $bat =~ ^[0-9]{1,3}$ ]]; then printf '"battery_pct":%s' "$bat"; else printf '"battery_pct":null'; fi
+  case "$ac" in
+    1) printf ',"on_ac":true' ;;
+    0) printf ',"on_ac":false' ;;
+    *) printf ',"on_ac":null' ;;
+  esac
+}
+
+link_json() { # état du câble vers la tour
+  local c=""
+  if hl_valid_iface "${LINK_INTERFACE:-}" && [ -e "/sys/class/net/$LINK_INTERFACE" ]; then
+    c=$(cat "/sys/class/net/$LINK_INTERFACE/carrier" 2>/dev/null)
+    if [ "$c" = "1" ]; then printf '"present":true,"carrier":true'; else printf '"present":true,"carrier":false'; fi
+  else
+    printf '"present":false,"carrier":false'
+  fi
+}
+
+reachable() { # reachable HÔTE : 1 seconde maximum
+  local rc=2
+  if command -v ping >/dev/null 2>&1; then
+    ping -c 1 -W 1 -q "$1" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -le 1 ] && return "$rc"      # 0 = répond, 1 = ne répond pas
+  fi
+  # ping absent ou inutilisable : on tente le port SSH.
+  timeout 1 bash -c ': > "/dev/tcp/$0/22"' "$1" 2>/dev/null
+}
+
+tower_via() { # affiche « link », « vpn » ou rien ; les deux chemins sont testés en parallèle
+  local d
+  d=$(mktemp -d) || return 0
+  if hl_valid_ipv4 "${LINK_TOWER_IP:-}"; then (reachable "$LINK_TOWER_IP" && : > "$d/link") & fi
+  if hl_valid_host "${TOWER_HOST:-}"; then (reachable "$TOWER_HOST" && : > "$d/vpn") & fi
+  wait
+  if [ -e "$d/link" ]; then printf 'link'; elif [ -e "$d/vpn" ]; then printf 'vpn'; fi
+  rm -rf "$d"
+}
+
+tower_json() {
+  local via
+  via=$(tower_via)
+  if [ -n "$via" ]; then printf '"online":true,"via":"%s"' "$via"; else printf '"online":false,"via":null'; fi
+  # Rempli à la phase 2 (script de la tour).
+  printf ',"uptime_s":null,"auto_off":null'
+}
+
+# ── Actions ──────────────────────────────────────────────────────────────────
+cmd_status() {
+  local probe pid cpu mem temp disk power link tower up l1 l5 l15 v
+  probe=$(mktemp) || fail_json internal "fichier temporaire impossible"
+  tower_json > "$probe" &          # la tour est sondée en parallèle
+  pid=$!
+  cpu=$(cpu_pct)
+  read -r up _ < /proc/uptime
+  up=${up%%.*}
+  read -r l1 l5 l15 _ < /proc/loadavg
+  for v in l1 l5 l15; do [[ ${!v} =~ ^[0-9]+\.[0-9]+$ ]] || printf -v "$v" 'null'; done
+  mem=$(mem_used_pct)
+  temp=$(temp_c)
+  disk=$(disk_used_pct)
+  power=$(power_json)
+  link=$(link_json)
+  wait "$pid"
+  tower=$(<"$probe")
+  rm -f "$probe"
+  printf '{"ok":true,"api":%d,"time":%s,"server":{"uptime_s":%d,"load":[%s,%s,%s],"cpu_pct":%s,"mem_used_pct":%s,"temp_c":%s,"disk_used_pct":%s,%s},"link":{%s},"tower":{%s}}\n' \
+    "$HOMELAB_API" "$(hl_json_str "$(hl_now)")" "${up:-0}" "$l1" "$l5" "$l15" \
+    "$cpu" "$mem" "$temp" "$disk" "$power" "$link" "$tower"
+}
+
+cmd_wake() {
+  local now last=0 cooldown=${WAKE_COOLDOWN_S:-20}
+  hl_valid_iface "${LINK_INTERFACE:-}" && hl_valid_mac "${TOWER_MAC:-}" \
+    || fail_json config "LINK_INTERFACE ou TOWER_MAC invalide dans la configuration"
+  hl_valid_uint "$cooldown" || cooldown=20
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  exec 9> "$STATE_DIR/wake.lock" || fail_json internal "verrou impossible"
+  if ! flock -n 9; then
+    log_action wake busy
+    printf '{"ok":true,"action":"wake","result":"busy"}\n'
+    return 0
+  fi
+  if [ -n "$(tower_via)" ]; then
+    log_action wake already_on
+    printf '{"ok":true,"action":"wake","result":"already_on"}\n'
+    return 0
+  fi
+  now=$(date +%s)
+  [ -r "$STATE_DIR/last_wake" ] && last=$(<"$STATE_DIR/last_wake")
+  hl_valid_uint "${last:-}" || last=0
+  if [ $((now - last)) -lt "$cooldown" ]; then
+    log_action wake ignored_recent
+    printf '{"ok":true,"action":"wake","result":"ignored_recent"}\n'
+    return 0
+  fi
+  printf '%s\n' "$now" > "$STATE_DIR/last_wake"
+  if sudo -n "$ROOT_HELPER" wake >/dev/null 2>&1; then
+    log_action wake sent
+    printf '{"ok":true,"action":"wake","result":"sent"}\n'
+  else
+    log_action wake failed
+    fail_json wake_failed "l'envoi du paquet de réveil a échoué"
+  fi
+}
+
+cmd_log() { # cmd_log N
+  local line first=1
+  printf '{"ok":true,"entries":['
+  if [ -r "$ACTION_LOG" ]; then
+    while IFS= read -r line; do
+      [[ $line == \{*\} ]] || continue
+      if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
+      printf '%s' "$line"
+    done < <(tail -n "$1" "$ACTION_LOG")
+  fi
+  printf ']}\n'
+}
+
+cmd_actions() {
+  printf '{"ok":true,"actions":["status","wake","log","actions","version"]}\n'
+}
+
+cmd_version() {
+  printf '{"ok":true,"version":%s,"api":%d}\n' "$(hl_json_str "$HOMELAB_VERSION")" "$HOMELAB_API"
+}
+
+# ── Lecture de la commande ───────────────────────────────────────────────────
+ARGS=()
+if [ -n "${SSH_CONNECTION:-}" ]; then
+  VIA="ssh"
+  FROM=${SSH_CONNECTION%% *}
+  [[ $FROM =~ ^[0-9A-Fa-f:.]{2,45}$ ]] || FROM="?"
+  RAW=${SSH_ORIGINAL_COMMAND:-}
+  # Seuls des minuscules, chiffres, espaces et tirets, 64 caractères au plus.
+  if [ "${#RAW}" -gt 64 ] || ! [[ $RAW =~ ^[a-z0-9\ -]*$ ]]; then
+    refuse "forbidden" "commande refusée"
+  fi
+  read -r -a ARGS <<< "$RAW"
+else
+  VIA="local"
+  FROM="local"
+  RAW="$*"
+  ARGS=("$@")
+fi
+
+ACTION=${ARGS[0]:-actions}
+NARGS=${#ARGS[@]}
+
+case "$ACTION" in
+  status)
+    [ "$NARGS" -le 1 ] || refuse "bad_args" "status ne prend pas d'argument"
+    cmd_status ;;
+  wake)
+    [ "$NARGS" -le 1 ] || refuse "bad_args" "wake ne prend pas d'argument"
+    cmd_wake ;;
+  log)
+    [ "$NARGS" -le 2 ] || refuse "bad_args" "usage : log [N]"
+    N=${ARGS[1]:-20}
+    if ! [[ $N =~ ^[0-9]{1,3}$ ]] || [ "$N" -lt 1 ] || [ "$N" -gt 200 ]; then
+      refuse "bad_args" "N doit être compris entre 1 et 200"
+    fi
+    cmd_log "$N" ;;
+  actions|help)
+    [ "$NARGS" -le 1 ] || refuse "bad_args" "actions ne prend pas d'argument"
+    cmd_actions ;;
+  version)
+    [ "$NARGS" -le 1 ] || refuse "bad_args" "version ne prend pas d'argument"
+    cmd_version ;;
+  *)
+    refuse "unknown_action" "action inconnue" ;;
+esac

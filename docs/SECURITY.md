@@ -12,7 +12,9 @@ Ce dépôt applique le **principe de Kerckhoffs** : un système doit rester sûr
 | Une donnée part sur GitHub par erreur | Les quatre verrous décrits plus bas |
 | Écoute du réseau | Tout passe par SSH, chiffré, à l'intérieur d'un VPN. Aucun service en clair |
 | Vol du téléphone | Application verrouillée par l'empreinte digitale, clés dans le stockage sécurisé d'Android, révocation des clés |
-| Vol de la clé « actions » | Commande forcée : seule une liste fermée d'actions est possible, et leurs arguments sont vérifiés |
+| Vol de la clé « actions » | Compte dédié sans droits, commande forcée par la clé **et** par SSH, liste fermée d'actions aux arguments vérifiés, clé acceptée seulement depuis le VPN. Détail : [`server/README.md`](../server/README.md) |
+| Commande piégée envoyée au script | Le texte reçu n'est jamais exécuté : caractères limités, longueur limitée, comparaison à une liste fermée, refus journalisé |
+| Configuration modifiée pour injecter une commande | Elle appartient à root, elle est lue sans être exécutée, et chaque valeur est validée avant usage |
 | Serveur compromis | La tour n'accepte du serveur qu'un script restreint, et ses droits administrateur sont limités aux commandes nécessaires |
 | Webcam regardée par un tiers | Le serveur vidéo n'écoute que sur la machine elle-même : on n'y accède que par un tunnel SSH |
 

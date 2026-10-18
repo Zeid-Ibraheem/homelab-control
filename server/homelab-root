@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# =============================================================================
+# homelab-root : les SEULES actions du serveur qui demandent les droits root.
+#
+# Lancé par l'utilisateur homelab via sudo, avec un argument fixe autorisé dans
+# /etc/sudoers.d/homelab. Ne lit aucune variable d'environnement : sudo les
+# efface, et les chemins sont écrits en dur ci-dessous.
+#
+#   wake   relance le lien vers la tour si besoin, puis envoie le paquet magique
+# =============================================================================
+set -euo pipefail
+umask 022
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# shellcheck source=lib.sh
+. /usr/local/lib/homelab/lib.sh
+hl_load_conf /etc/homelab/homelab.conf || { echo "configuration illisible" >&2; exit 1; }
+
+[ "$#" -eq 1 ] || { echo "usage : homelab-root wake" >&2; exit 2; }
+
+carrier() { [ "$(cat "/sys/class/net/$LINK_INTERFACE/carrier" 2>/dev/null)" = "1" ]; }
+
+case "$1" in
+  wake)
+    hl_valid_iface "${LINK_INTERFACE:-}" || { echo "LINK_INTERFACE invalide" >&2; exit 3; }
+    hl_valid_mac "${TOWER_MAC:-}"        || { echo "TOWER_MAC invalide" >&2; exit 3; }
+    [ -e "/sys/class/net/$LINK_INTERFACE" ] || { echo "interface $LINK_INTERFACE absente" >&2; exit 4; }
+    # Certains adaptateurs USB perdent la détection du câble quand la tour
+    # s'éteint : sans signal, le système refuse d'envoyer quoi que ce soit.
+    if ! carrier; then
+      ip link set "$LINK_INTERFACE" down
+      sleep 2
+      ip link set "$LINK_INTERFACE" up
+      for _ in 1 2 3 4 5 6 7 8; do
+        carrier && break
+        sleep 1
+      done
+    fi
+    etherwake -i "$LINK_INTERFACE" "$TOWER_MAC"
+    ;;
+  *)
+    echo "action inconnue" >&2
+    exit 2
+    ;;
+esac

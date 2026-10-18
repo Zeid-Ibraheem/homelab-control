@@ -3,8 +3,8 @@
 Application mobile et scripts pour piloter un petit homelab depuis un téléphone :
 allumer et éteindre une tour, suivre l'état des machines, ouvrir un terminal.
 
-> **Statut : phase 0.** Squelette du dépôt et verrous de publication.
-> Aucune fonctionnalité n'est encore disponible.
+> **Statut : phase 1.** Le serveur répond aux actions `status`, `wake` et `log`
+> par SSH, depuis un terminal. L'application arrive à la phase 3.
 
 ## Ce que fera le projet
 

@@ -26,7 +26,7 @@ flowchart LR
 ```
 
 - Le téléphone ne parle qu'au serveur, toujours joignable, qui relaie vers la tour.
-- **Clé « actions »** : dans `authorized_keys`, elle est liée à une commande forcée. Quoi qu'on envoie, seul le script `homelab` s'exécute, et il n'accepte qu'une liste fermée d'actions.
+- **Clé « actions »** : elle appartient à un compte dédié, `homelab`, sans mot de passe ni droits d'administrateur, et elle est liée à une commande forcée. Quoi qu'on envoie, seul le script `homelab` s'exécute, et il n'accepte qu'une liste fermée d'actions. La seule action qui demande les droits root (le réveil) passe par un petit script autorisé par `sudo` avec un argument fixe.
 - **Clé « terminal »** : accès complet, protégée dans l'application par l'empreinte digitale à chaque utilisation.
 - Le serveur se connecte à la tour avec une clé elle aussi restreinte au script `tour`, et les droits administrateur de la tour sont limités par `sudoers` aux seules commandes nécessaires.
 
@@ -62,8 +62,8 @@ Chaque phase a un critère de fin vérifiable.
 
 | Phase | Contenu | Critère de fin |
 |---|---|---|
-| **0** | Squelette du dépôt, verrous de publication | Un commit contenant une donnée de la liste noire, une adresse MAC ou une clé est bloqué |
-| **1** | Script `homelab` sur le serveur : actions, état en JSON, journal | Depuis un terminal du téléphone : allumer la tour, lire l'état, consulter le journal |
+| **0** ✅ | Squelette du dépôt, verrous de publication | Un commit contenant une donnée de la liste noire, une adresse MAC ou une clé est bloqué |
+| **1** ✅ | Script `homelab` sur le serveur : compte dédié, actions `status`, `wake`, `log`, état en JSON, journal (voir [`server/README.md`](../server/README.md)) | Depuis un terminal du téléphone : allumer la tour, lire l'état, consulter le journal |
 | **2** | Script `tour`, extinction automatique, `sudoers` limité | La tour s'éteint seule à l'échéance, même si le serveur et le téléphone sont hors ligne |
 | **3** | Application minimale : verrou biométrique, tableau de bord, boutons principaux | Allumer, éteindre et prolonger depuis l'application |
 | **4** | Surveillance complète : disques, services, sécurité | Tous les indicateurs visibles dans l'application |
@@ -72,30 +72,33 @@ Chaque phase a un critère de fin vérifiable.
 
 ## Contrat d'échange (première version)
 
-Le script `homelab` répond en JSON. Exemple de réponse à `status`, avec des valeurs fictives :
+Le script `homelab` répond par une ligne JSON. Toute réponse contient `ok` ; en cas d'échec, `error` (code stable) et `message` (texte lisible). Exemple de réponse à `status`, avec des valeurs fictives :
 
 ```json
 {
-  "version": 1,
+  "ok": true,
+  "api": 1,
+  "time": "2026-01-01T12:00:00+01:00",
   "server": {
     "uptime_s": 345600,
-    "cpu_pct": 4.2,
-    "mem_used_pct": 21.0,
-    "temp_c": 41.0
+    "load": [0.08, 0.12, 0.10],
+    "cpu_pct": 2.3,
+    "mem_used_pct": 21.4,
+    "temp_c": 41.0,
+    "disk_used_pct": 12,
+    "battery_pct": 64,
+    "on_ac": true
   },
-  "tower": {
-    "online": true,
-    "uptime_s": 5400,
-    "auto_off": {
-      "deadline": "2026-01-01T22:00:00+01:00",
-      "remaining_s": 7200,
-      "hold": false
-    }
-  }
+  "link": { "present": true, "carrier": true },
+  "tower": { "online": false, "via": null, "uptime_s": null, "auto_off": null }
 }
 ```
 
-Le champ `version` permet de faire évoluer le format sans casser l'application.
+- `api` permet de faire évoluer le format sans casser l'application.
+- `tower.uptime_s` et `tower.auto_off` seront remplis à la phase 2 (script de la tour).
+- Une mesure indisponible vaut `null`, jamais une valeur inventée.
+
+Codes de sortie : 0 = ok, 1 = échec, 2 = commande refusée.
 
 ## Choix techniques
 

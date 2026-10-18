@@ -25,6 +25,12 @@ LINK_SERVER_IP="192.0.2.1"         # adresse du serveur sur le câble
 LINK_TOWER_IP="192.0.2.2"          # adresse de la tour sur le câble
 TOWER_MAC="AA:BB:CC:DD:EE:FF"      # MAC de la carte Ethernet de la tour (réveil)
 
+# ── Accès du téléphone ──────────────────────────────────────────────────────
+ACTIONS_KEY_FROM="100.64.0.0/10"   # adresses d'où la clé « actions » est acceptée
+                                   # (plage du VPN ; ajouter sa plage IPv6, séparée
+                                   # par une virgule) ; vide = toutes les adresses
+WAKE_COOLDOWN_S=20                 # délai minimal entre deux réveils, en secondes
+
 # ── Extinction automatique de la tour ───────────────────────────────────────
 AUTO_OFF_DEFAULT_HOURS=8           # durée accordée à chaque allumage
 AUTO_OFF_EXTEND_HOURS=2            # durée ajoutée par « prolonger »
