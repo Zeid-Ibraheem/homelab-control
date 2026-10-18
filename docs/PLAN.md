@@ -37,9 +37,10 @@ flowchart LR
 | Allumer la tour (Wake-on-LAN par le câble direct) | 1 |
 | Éteindre et redémarrer la tour | 1-2 |
 | Temps depuis l'allumage, temps restant avant extinction | 2 |
-| Extinction automatique : échéance par défaut, « prolonger », plafond absolu | 2 |
+| Extinction automatique : échéance par défaut, « prolonger », « éteindre dans N minutes », plafond absolu | 2 |
 | Bouton « ne pas éteindre » temporaire, dans la limite du plafond | 2 |
-| Allumage programmé, géré par le serveur | 2 |
+| Jamais d'extinction automatique pendant qu'on utilise la tour : session ouverte, mise à jour, tâche protégée par `systemd-inhibit` | 2 |
+| Allumage programmé (dates au format systemd, dans la configuration du serveur) | 2 |
 | Journal de toutes les actions | 1 |
 | Surveillance du serveur et de la tour : processeur, mémoire, températures, réseau | 4 |
 | Santé des disques (SMART) | 4 |
@@ -54,6 +55,7 @@ flowchart LR
 |---|---|
 | Mises à jour de la tour depuis l'application | Une mise à jour qui échoue à distance peut rendre la tour injoignable : elles se font devant la machine |
 | Notifications par un service extérieur | Pas de dépendance à un service tiers |
+| Modifier l'allumage programmé depuis l'application | Il faudrait donner au téléphone le droit d'écrire une configuration lue par root : les dates se changent sur le serveur |
 | API web, base de données | Surface d'attaque supplémentaire, sans besoin réel : SSH suffit |
 
 ## Phases
@@ -64,11 +66,11 @@ Chaque phase a un critère de fin vérifiable.
 |---|---|---|
 | **0** ✅ | Squelette du dépôt, verrous de publication | Un commit contenant une donnée de la liste noire, une adresse MAC ou une clé est bloqué |
 | **1** ✅ | Script `homelab` sur le serveur : compte dédié, actions `status`, `wake`, `log`, état en JSON, journal (voir [`server/README.md`](../server/README.md)) | Depuis un terminal du téléphone : allumer la tour, lire l'état, consulter le journal |
-| **2** | Script `tour`, extinction automatique, `sudoers` limité | La tour s'éteint seule à l'échéance, même si le serveur et le téléphone sont hors ligne |
+| **2** ✅ | Script `tour`, extinction automatique (repoussée tant que la tour est utilisée), relais du serveur vers la tour (câble, puis VPN en secours), allumage programmé, `sudoers` limité (voir [`tower/README.md`](../tower/README.md)) | La tour s'éteint seule à l'échéance, même si le serveur et le téléphone sont hors ligne |
 | **3** | Application minimale : verrou biométrique, tableau de bord, boutons principaux | Allumer, éteindre et prolonger depuis l'application |
 | **4** | Surveillance complète : disques, services, sécurité | Tous les indicateurs visibles dans l'application |
 | **5** | Terminal intégré | Session interactive vers chaque machine depuis l'application |
-| **6** | Webcam par tunnel SSH, écran de programmation | Flux visible, serveur vidéo en écoute locale uniquement |
+| **6** | Webcam par tunnel SSH, affichage des allumages programmés | Flux visible, serveur vidéo en écoute locale uniquement |
 
 ## Contrat d'échange (première version)
 
@@ -90,12 +92,12 @@ Le script `homelab` répond par une ligne JSON. Toute réponse contient `ok` ; e
     "on_ac": true
   },
   "link": { "present": true, "carrier": true },
-  "tower": { "online": false, "via": null, "uptime_s": null, "auto_off": null }
+  "tower": { "online": false, "via": null, "detail": null }
 }
 ```
 
 - `api` permet de faire évoluer le format sans casser l'application.
-- `tower.uptime_s` et `tower.auto_off` seront remplis à la phase 2 (script de la tour).
+- Quand la tour est allumée, `tower.detail` contient la réponse de son propre script : temps depuis le démarrage, températures, échéance d'extinction (exemple complet dans [`server/README.md`](../server/README.md)).
 - Une mesure indisponible vaut `null`, jamais une valeur inventée.
 
 Codes de sortie : 0 = ok, 1 = échec, 2 = commande refusée.
@@ -113,4 +115,5 @@ Codes de sortie : 0 = ok, 1 = échec, 2 = commande refusée.
 ## Points à vérifier pendant le développement
 
 - Stockage des clés SSH dans la puce de sécurité du téléphone (StrongBox) : compatibilité avec dartssh2 à confirmer. Solution de repli : clé chiffrée par un code, avec une dérivation résistante aux essais en masse.
-- Valeurs de l'extinction automatique (8 h, +2 h, plafond de 48 h) : réglables dans la configuration.
+- Valeurs de l'extinction automatique (8 h, +2 h, plafond de 48 h, délai de 30 min devant la tour) : réglables dans la configuration.
+- Détection du verrouillage de l'écran par KDE (`LockedHint`) : à vérifier une fois sur la tour (procédure dans [`tower/README.md`](../tower/README.md#à-vérifier-une-fois-sur-la-tour)).

@@ -1,0 +1,6 @@
+[Unit]
+Description=Extinction automatique de la tour (homelab)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/homelab/homelab-autooff

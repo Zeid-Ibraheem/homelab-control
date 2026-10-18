@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# =============================================================================
+# tour-root : les SEULES actions de la tour qui demandent les droits root.
+#
+# Lancé par le compte homelab via sudo, avec un argument fixe autorisé dans
+# /etc/sudoers.d/homelab-tower. Ne lit aucune variable d'environnement.
+#
+#   poweroff   éteint la tour dans 3 secondes
+#   reboot     redémarre la tour dans 3 secondes
+#
+# Le délai laisse le temps à la réponse de repartir avant que le réseau ne coupe.
+# =============================================================================
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+[ "$#" -eq 1 ] || { echo "usage : tour-root poweroff|reboot" >&2; exit 2; }
+
+SYSTEMCTL=$(command -v systemctl)
+case "$1" in
+  poweroff|reboot)
+    systemd-run --quiet --on-active=3 --timer-property=AccuracySec=1s \
+      --description="homelab : $1 demandé à distance" "$SYSTEMCTL" "$1"
+    ;;
+  *)
+    echo "action inconnue" >&2
+    exit 2
+    ;;
+esac

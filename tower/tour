@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# =============================================================================
+# tour : point d'entrée du serveur vers la tour.
+#
+# Appelé par SSH avec la clé restreinte du serveur (commande forcée). La
+# commande reçue n'est JAMAIS exécutée telle quelle : elle est comparée à une
+# liste fermée d'actions.
+#
+# Actions :
+#   status        état de la tour et de son extinction automatique (JSON)
+#   shutdown      éteint la tour (dans 3 secondes)
+#   reboot        redémarre la tour (dans 3 secondes)
+#   extend [H]    repousse l'échéance de H heures (défaut : AUTO_OFF_EXTEND_HOURS)
+#   off-in N      échéance dans N minutes (1 à 10080)
+#   hold on|off   « ne pas éteindre » jusqu'au plafond, ou annuler
+#   actions       liste des actions disponibles
+#   version       version du script
+#
+# Réponse : une ligne JSON. Code de sortie : 0 = ok, 1 = échec, 2 = refusé.
+# Utilisation locale sur la tour : sudo -u homelab tour status
+# =============================================================================
+set -uo pipefail
+umask 022
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+LIB=/usr/local/lib/homelab/lib.sh
+CONF=/etc/homelab/homelab.conf
+ROOT_HELPER=/usr/local/lib/homelab/tour-root
+
+# En local uniquement (jamais via SSH), les chemins peuvent être changés pour les tests.
+if [ -z "${SSH_CONNECTION:-}" ]; then
+  LIB=${HOMELAB_LIB:-$LIB}
+  CONF=${HOMELAB_CONF:-$CONF}
+fi
+
+# shellcheck source=../common/lib.sh
+. "$LIB" 2>/dev/null || { printf '{"ok":false,"error":"internal","message":"bibliothèque introuvable"}\n'; exit 1; }
+hl_load_conf "$CONF" || { printf '{"ok":false,"error":"config","message":"configuration illisible"}\n'; exit 1; }
+ACTION_LOG=${ACTION_LOG:-/var/log/homelab/actions.log}
+
+# Résumé de l'échéance, partagé par plusieurs réponses.
+# « delayed » : l'extinction a été repoussée parce que la tour est utilisée.
+autooff_json() {
+  local now remaining hold delayed
+  now=$(date +%s)
+  remaining=$((AO_EFFECTIVE - now))
+  [ "$remaining" -lt 0 ] && remaining=0
+  hold=false
+  [ "$AO_HOLD" -gt "$now" ] && hold=true
+  delayed=false
+  [ "$AO_GRACE" -gt "$AO_PLANNED" ] && delayed=true
+  printf '"deadline":%s,"remaining_s":%d,"hold":%s,"cap":%s,"delayed":%s' \
+    "$(hl_json_str "$(hl_iso "$AO_EFFECTIVE")")" "$remaining" "$hold" \
+    "$(hl_json_str "$(hl_iso "$AO_CAP")")" "$delayed"
+}
+
+save_request() { # save_request ÉCHÉANCE MAINTIEN
+  hl_state_write "$HL_AO_REQ" "$(hl_boot_id) $1 $2" \
+    || hl_fail_json internal "impossible d'enregistrer l'échéance"
+}
+
+cmd_status() {
+  local up cpu mem ct gt disk sess busy
+  hl_autooff_compute
+  up=$(hl_uptime_s)
+  cpu=$(hl_cpu_pct)
+  mem=$(hl_mem_used_pct)
+  ct=$(hl_cpu_temp)
+  gt=$(hl_gpu_temp)
+  disk=$(hl_disk_used_pct)
+  sess=$(hl_bool hl_session_active)
+  # Tâche à ne pas interrompre (mise à jour, verrou systemd), sinon null.
+  if busy=$(hl_busy_reason); then busy=$(hl_json_str "$busy"); else busy=null; fi
+  printf '{"ok":true,"api":%d,"time":%s,"uptime_s":%d,"boot_time":%s,"cpu_pct":%s,"mem_used_pct":%s,"cpu_temp_c":%s,"gpu_temp_c":%s,"disk_used_pct":%s,"session_active":%s,"busy":%s,"auto_off":{%s}}\n' \
+    "$HOMELAB_API" "$(hl_json_str "$(hl_now)")" "${up:-0}" "$(hl_json_str "$(hl_iso "$AO_BTIME")")" \
+    "$cpu" "$mem" "$ct" "$gt" "$disk" "$sess" "$busy" "$(autooff_json)"
+}
+
+cmd_power() { # cmd_power shutdown|reboot
+  local arg=poweroff
+  [ "$1" = "reboot" ] && arg=reboot
+  if sudo -n "$ROOT_HELPER" "$arg" >/dev/null 2>&1; then
+    hl_log_action "$1" scheduled
+    printf '{"ok":true,"action":%s,"result":"scheduled","in_s":3}\n' "$(hl_json_str "$1")"
+  else
+    hl_log_action "$1" failed
+    hl_fail_json power_failed "la commande d'arrêt a échoué"
+  fi
+}
+
+cmd_extend() { # cmd_extend HEURES : repousse l'échéance affichée
+  local h=$1 now base new capped=false
+  hl_autooff_compute
+  now=$(date +%s)
+  base=$AO_EFFECTIVE
+  # Avec « ne pas éteindre », on repousse l'échéance qui reviendra à l'annulation.
+  if [ "$AO_HOLD" -gt "$now" ]; then
+    base=$AO_BASE
+    [ "$AO_TARGET" -gt 0 ] && base=$AO_TARGET
+  fi
+  [ "$base" -lt "$now" ] && base=$now
+  new=$((base + h * 3600))
+  if [ "$new" -gt "$AO_CAP" ]; then new=$AO_CAP; capped=true; fi
+  save_request "$new" "$AO_HOLD"
+  hl_autooff_compute
+  hl_log_action "extend $h" ok
+  printf '{"ok":true,"action":"extend","hours":%d,"capped":%s,"auto_off":{%s}}\n' "$h" "$capped" "$(autooff_json)"
+}
+
+cmd_offin() { # cmd_offin MINUTES : échéance dans N minutes, « ne pas éteindre » annulé
+  local m=$1 now new capped=false
+  hl_autooff_compute
+  now=$(date +%s)
+  new=$((now + m * 60))
+  if [ "$new" -gt "$AO_CAP" ]; then new=$AO_CAP; capped=true; fi
+  save_request "$new" 0
+  hl_autooff_compute
+  hl_log_action "off-in $m" ok
+  printf '{"ok":true,"action":"off-in","minutes":%d,"capped":%s,"auto_off":{%s}}\n' "$m" "$capped" "$(autooff_json)"
+}
+
+cmd_hold() { # cmd_hold on|off
+  local end=0
+  hl_autooff_compute
+  [ "$1" = "on" ] && end=$AO_CAP
+  save_request "$AO_TARGET" "$end"
+  hl_autooff_compute
+  hl_log_action "hold $1" ok
+  printf '{"ok":true,"action":"hold","value":"%s","auto_off":{%s}}\n' "$1" "$(autooff_json)"
+}
+
+cmd_actions() {
+  printf '{"ok":true,"actions":["status","shutdown","reboot","extend","off-in","hold","actions","version"]}\n'
+}
+
+cmd_version() {
+  printf '{"ok":true,"version":%s,"api":%d}\n' "$(hl_json_str "$HOMELAB_VERSION")" "$HOMELAB_API"
+}
+
+# ── Lecture de la commande ───────────────────────────────────────────────────
+hl_parse_command "$@"
+ACTION=${ARGS[0]:-actions}
+NARGS=${#ARGS[@]}
+
+case "$ACTION" in
+  status)
+    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "status ne prend pas d'argument"
+    cmd_status ;;
+  shutdown|reboot)
+    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "$ACTION ne prend pas d'argument"
+    cmd_power "$ACTION" ;;
+  extend)
+    [ "$NARGS" -le 2 ] || hl_refuse "bad_args" "usage : extend [H]"
+    H=${ARGS[1]:-${AUTO_OFF_EXTEND_HOURS:-2}}
+    hl_in_range "$H" 1 720 || hl_refuse "bad_args" "H doit être un nombre d'heures entre 1 et 720"
+    cmd_extend "$H" ;;
+  off-in)
+    [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : off-in N"
+    hl_in_range "${ARGS[1]}" 1 10080 || hl_refuse "bad_args" "N doit être un nombre de minutes entre 1 et 10080"
+    cmd_offin "${ARGS[1]}" ;;
+  hold)
+    [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : hold on|off"
+    case "${ARGS[1]}" in
+      on|off) cmd_hold "${ARGS[1]}" ;;
+      *)      hl_refuse "bad_args" "usage : hold on|off" ;;
+    esac ;;
+  actions|help)
+    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "actions ne prend pas d'argument"
+    cmd_actions ;;
+  version)
+    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "version ne prend pas d'argument"
+    cmd_version ;;
+  *)
+    hl_refuse "unknown_action" "action inconnue" ;;
+esac

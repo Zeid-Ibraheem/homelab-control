@@ -3,14 +3,14 @@
 Application mobile et scripts pour piloter un petit homelab depuis un téléphone :
 allumer et éteindre une tour, suivre l'état des machines, ouvrir un terminal.
 
-> **Statut : phase 1.** Le serveur répond aux actions `status`, `wake` et `log`
-> par SSH, depuis un terminal. L'application arrive à la phase 3.
+> **Statut : phase 2.** Depuis un terminal, par SSH : allumer, éteindre et
+> redémarrer la tour, programmer son allumage, suivre son état et son
+> extinction automatique. L'application arrive à la phase 3.
 
 ## Ce que fera le projet
 
-- Allumer la tour à distance (Wake-on-LAN), l'éteindre, la redémarrer
-- Extinction automatique de la tour : échéance prolongeable, bouton « ne pas éteindre », plafond absolu
-- Allumage programmé
+- Allumer la tour à distance (Wake-on-LAN), l'éteindre, la redémarrer, programmer son allumage
+- Extinction automatique de la tour : échéance prolongeable, bouton « ne pas éteindre », plafond absolu, jamais pendant qu'on l'utilise
 - Surveillance du serveur et de la tour : processeur, mémoire, températures, disques (SMART), services
 - Tableau de bord sécurité et journal de toutes les actions
 - Terminal SSH vers chaque machine
@@ -38,8 +38,9 @@ Principes :
 ```
 homelab-control/
 ├── app/        Application Flutter (phase 3)
-├── server/     Scripts et services du serveur (phase 1)
-├── tower/      Scripts et services de la tour (phase 2)
+├── common/     Bibliothèque commune au serveur et à la tour
+├── server/     Scripts et services du serveur
+├── tower/      Scripts et services de la tour
 ├── config/     Modèles de configuration, avec des valeurs fictives
 ├── docs/       Feuille de route et modèle de sécurité
 ├── scripts/    Vérifications avant publication et installation des hooks
@@ -61,6 +62,8 @@ copié hors du dépôt dans `/etc/homelab/homelab.conf`.
 
 - [`docs/PLAN.md`](docs/PLAN.md) : feuille de route, fonctionnalités et choix techniques
 - [`docs/SECURITY.md`](docs/SECURITY.md) : modèle de sécurité et règles de publication
+- [`server/README.md`](server/README.md) : installation du serveur, actions, allumage programmé
+- [`tower/README.md`](tower/README.md) : installation de la tour, extinction automatique
 
 ## Licence
 

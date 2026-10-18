@@ -1,0 +1,10 @@
+[Unit]
+Description=Vérifie chaque minute l'échéance d'extinction de la tour (homelab)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

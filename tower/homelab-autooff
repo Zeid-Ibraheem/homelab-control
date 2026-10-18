@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# =============================================================================
+# homelab-autooff : extinction automatique de la tour.
+#
+# Lancé chaque minute par homelab-autooff.timer, en root. Il fonctionne seul :
+# même si le serveur ou le téléphone sont hors ligne, la tour s'éteint à
+# l'échéance. Règles (valeurs dans /etc/homelab/homelab.conf) :
+#   - à chaque démarrage : échéance = démarrage + AUTO_OFF_DEFAULT_HOURS ;
+#   - « prolonger », « éteindre dans N min » et « ne pas éteindre » la
+#     déplacent, jamais au-delà du plafond = démarrage + AUTO_OFF_MAX_HOURS ;
+#   - à l'échéance, si la tour est utilisée, rien n'est éteint : l'extinction
+#     est repoussée, puis a lieu ce délai après la dernière utilisation vue :
+#       session graphique locale ouverte et déverrouillée : AUTO_OFF_SESSION_GRACE_MIN ;
+#       mise à jour pacman en cours, ou programme qui bloque l'extinction
+#       (systemd-inhibit --what=shutdown …) : 10 minutes.
+#
+# Root n'écrit que dans son propre dossier (/var/lib/homelab-autooff) et ne
+# fait que LIRE les demandes du compte homelab, valeurs vérifiées.
+# Événements dans le journal système : journalctl -t homelab-autooff
+# =============================================================================
+set -euo pipefail
+umask 022
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# Le journal est utile mais jamais bloquant : une erreur de « logger » ne doit
+# pas empêcher l'extinction.
+log() { logger -t homelab-autooff "$*" 2>/dev/null || true; }
+
+# shellcheck source=../common/lib.sh
+. /usr/local/lib/homelab/lib.sh
+if ! hl_load_conf /etc/homelab/homelab.conf; then
+  log "configuration /etc/homelab/homelab.conf illisible : aucune action"
+  exit 1
+fi
+
+GRACE_MIN=${AUTO_OFF_SESSION_GRACE_MIN:-30}
+hl_in_range "$GRACE_MIN" 1 1440 || GRACE_MIN=30
+BUSY_GRACE_MIN=10
+
+# Le dossier de root doit être un vrai dossier appartenant à root. Sinon, on n'y
+# lit et n'y écrit rien, et on n'éteint rien (erreur visible dans le journal).
+ROOT_DIR=${HL_AO_ROOT%/*}
+[ -e "$ROOT_DIR" ] || [ -L "$ROOT_DIR" ] || install -d -o root -g root -m 755 "$ROOT_DIR"
+if [ -L "$ROOT_DIR" ] || [ ! -d "$ROOT_DIR" ] || [ "$(stat -c %u "$ROOT_DIR")" != "0" ]; then
+  log "dossier $ROOT_DIR non sûr : aucune action"
+  exit 1
+fi
+
+hl_autooff_compute
+now=$(date +%s)
+# Échéance prévue pas encore atteinte : rien à faire.
+[ "$now" -lt "$AO_PLANNED" ] && exit 0
+
+# Échéance atteinte, mais la tour est utilisée : report de N minutes à partir
+# de maintenant (jamais raccourci). Une seule ligne de journal par report.
+postpone() { # postpone MINUTES RAISON
+  local end=$((now + $1 * 60))
+  [ "$AO_GRACE" -gt "$end" ] && end=$AO_GRACE
+  hl_state_write "$HL_AO_ROOT" "$(hl_boot_id) $end 0"
+  [ "$AO_GRACE" -gt "$now" ] || log "échéance atteinte, mais $2 : extinction repoussée"
+  exit 0
+}
+
+if hl_session_active; then
+  postpone "$GRACE_MIN" "une session locale est active"
+fi
+if reason=$(hl_busy_reason); then
+  postpone "$BUSY_GRACE_MIN" "$reason"
+fi
+# Report accordé plus tôt et pas encore écoulé : on attend encore.
+[ "$now" -lt "$AO_GRACE" ] && exit 0
+
+log "échéance atteinte : extinction de la tour"
+systemctl poweroff

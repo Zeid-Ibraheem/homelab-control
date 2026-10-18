@@ -12,7 +12,7 @@ set -euo pipefail
 umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
-# shellcheck source=lib.sh
+# shellcheck source=../common/lib.sh
 . /usr/local/lib/homelab/lib.sh
 hl_load_conf /etc/homelab/homelab.conf || { echo "configuration illisible" >&2; exit 1; }
 

@@ -15,7 +15,9 @@ Ce dépôt applique le **principe de Kerckhoffs** : un système doit rester sûr
 | Vol de la clé « actions » | Compte dédié sans droits, commande forcée par la clé **et** par SSH, liste fermée d'actions aux arguments vérifiés, clé acceptée seulement depuis le VPN. Détail : [`server/README.md`](../server/README.md) |
 | Commande piégée envoyée au script | Le texte reçu n'est jamais exécuté : caractères limités, longueur limitée, comparaison à une liste fermée, refus journalisé |
 | Configuration modifiée pour injecter une commande | Elle appartient à root, elle est lue sans être exécutée, et chaque valeur est validée avant usage |
-| Serveur compromis | La tour n'accepte du serveur qu'un script restreint, et ses droits administrateur sont limités aux commandes nécessaires |
+| Serveur compromis | La tour n'accepte du serveur qu'un script restreint, depuis ses seules adresses, et ses droits administrateur sont limités à éteindre et redémarrer. Le plafond d'extinction est appliqué par root sur la tour, quoi que demande le serveur |
+| Fichiers du compte `homelab` de la tour modifiés | Root ne fait que les lire : fichier ordinaire seulement (pas de lien, pas de tube), 200 octets au plus, valeurs vérifiées, liées au démarrage en cours. Au pire, l'échéance avance ou recule dans la limite du plafond |
+| Action exécutée deux fois par le relais | Le serveur ne réessaie par l'autre chemin que si la connexion a échoué avant de lancer la commande |
 | Webcam regardée par un tiers | Le serveur vidéo n'écoute que sur la machine elle-même : on n'y accède que par un tunnel SSH |
 
 Hors périmètre, choix assumé : les disques ne sont pas chiffrés, pour que les machines puissent redémarrer sans personne devant. En cas de vol physique d'une machine, changer immédiatement les mots de passe qu'elle contenait et la retirer du VPN.

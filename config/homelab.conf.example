@@ -1,46 +1,64 @@
 # =============================================================================
 # homelab.conf.example : MODÈLE de configuration, avec des valeurs FICTIVES.
 #
-# Installation, sur le serveur ET sur la tour :
-#   sudo install -d -m 755 /etc/homelab
-#   sudo install -m 640 config/homelab.conf.example /etc/homelab/homelab.conf
-#   sudoedit /etc/homelab/homelab.conf     # puis remplacer chaque valeur
+# Copié dans /etc/homelab/homelab.conf au premier lancement de server/install.sh
+# (sur le serveur) ou de tower/install.sh (sur la tour). Ensuite :
+#   sudoedit /etc/homelab/homelab.conf     # remplacer les valeurs utiles à la machine
+# Chaque partie indique si elle sert au serveur, à la tour, ou aux deux.
 #
 # Le fichier réel ne doit JAMAIS entrer dans le dépôt : il est ignoré par Git
 # et bloqué par scripts/check-public.sh.
 #
-# Format : variables shell (NOM="valeur"), lues par les scripts avec « source ».
+# Format : NOM="valeur", une par ligne. Le fichier est lu SANS être exécuté :
+# seules les clés connues sont prises en compte, tout le reste est ignoré.
 # Les adresses 192.0.2.x sont réservées à la documentation (RFC 5737).
 # =============================================================================
 
 # ── Machines ─────────────────────────────────────────────────────────────────
 SERVER_HOST="mon-serveur"          # nom du serveur (toujours allumé) sur le VPN
 SERVER_USER="utilisateur"          # compte utilisé sur le serveur
-TOWER_HOST="ma-tour"               # nom de la tour sur le VPN
+TOWER_HOST="ma-tour"               # nom de la tour sur le VPN (le serveur s'en sert
+                                   # quand le câble ne répond pas)
 TOWER_USER="utilisateur"           # compte utilisé sur la tour
 
-# ── Lien direct serveur ↔ tour (câble Ethernet) ─────────────────────────────
+# ── Câble direct serveur ↔ tour (utilisé sur le serveur) ───────────────────
 LINK_INTERFACE="enx000000000000"   # carte réseau du serveur reliée à la tour
 LINK_SERVER_IP="192.0.2.1"         # adresse du serveur sur le câble
 LINK_TOWER_IP="192.0.2.2"          # adresse de la tour sur le câble
 TOWER_MAC="AA:BB:CC:DD:EE:FF"      # MAC de la carte Ethernet de la tour (réveil)
 
-# ── Accès du téléphone ──────────────────────────────────────────────────────
-ACTIONS_KEY_FROM="100.64.0.0/10"   # adresses d'où la clé « actions » est acceptée
-                                   # (plage du VPN ; ajouter sa plage IPv6, séparée
-                                   # par une virgule) ; vide = toutes les adresses
+# ── Accès du téléphone (utilisé sur le serveur) ────────────────────────────
+ACTIONS_KEY_FROM="100.64.0.0/10"   # adresses d'où la clé « actions » est acceptée :
+                                   # plage IPv4 du VPN (le téléphone s'y connecte
+                                   # en IPv4) ; vide = toutes les adresses
 WAKE_COOLDOWN_S=20                 # délai minimal entre deux réveils, en secondes
 
-# ── Extinction automatique de la tour ───────────────────────────────────────
-AUTO_OFF_DEFAULT_HOURS=8           # durée accordée à chaque allumage
-AUTO_OFF_EXTEND_HOURS=2            # durée ajoutée par « prolonger »
-AUTO_OFF_MAX_HOURS=48              # plafond absolu, même avec « ne pas éteindre »
+# ── Allumage programmé de la tour (utilisé sur le serveur) ─────────────────
+WAKE_SCHEDULE=""                   # vide = aucun. Format systemd (OnCalendar),
+                                   # plusieurs dates séparées par « ; ». Exemple :
+                                   # "Mon..Fri *-*-* 07:45:00; Sat *-*-* 10:00:00"
+                                   # Vérifier une date : systemd-analyze calendar "…"
 
-# ── Surveillance ────────────────────────────────────────────────────────────
+# ── Accès du serveur à la tour (utilisé sur la tour) ───────────────────────
+TOWER_KEY_FROM="192.0.2.1,100.64.0.0/10"   # adresses d'où la clé du serveur est
+                                   # acceptée, séparées par des virgules : le serveur
+                                   # sur le câble, puis la plage IPv4 du VPN (le
+                                   # serveur s'y connecte toujours en IPv4) ; vide = toutes
+
+# ── Extinction automatique de la tour (utilisé sur la tour) ────────────────
+AUTO_OFF_DEFAULT_HOURS=8           # durée accordée à chaque démarrage
+AUTO_OFF_EXTEND_HOURS=2            # durée ajoutée par « prolonger »
+AUTO_OFF_MAX_HOURS=48              # plafond après le démarrage, même avec
+                                   # « prolonger » ou « ne pas éteindre »
+AUTO_OFF_SESSION_GRACE_MIN=30      # session locale déverrouillée à l'échéance :
+                                   # extinction seulement ce délai après la
+                                   # dernière minute où elle était utilisée
+
+# ── Surveillance (phase 4, pas encore utilisé) ─────────────────────────────
 SERVER_SERVICES="ssh tailscaled NetworkManager"   # services suivis sur le serveur
 TOWER_SERVICES="sshd tailscaled NetworkManager"   # services suivis sur la tour
 SERVER_SMART_DEVICES="/dev/nvme0n1"               # disques dont on lit la santé
 TOWER_SMART_DEVICES="/dev/nvme0n1 /dev/sda"
 
-# ── Journal des actions ─────────────────────────────────────────────────────
+# ── Journal des actions (serveur et tour) ──────────────────────────────────
 ACTION_LOG="/var/log/homelab/actions.log"
