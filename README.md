@@ -19,41 +19,22 @@ allumer et éteindre une tour, suivre l'état des machines, ouvrir un terminal.
 
 ## Architecture
 
-flowchart LR
-    subgraph MOBILE["Téléphone"]
-        P["Application mobile"]
-    end
+## Architecture
 
-    subgraph SERVER["Serveur relais · 24 h/24"]
-        A["Clé SSH « actions »<br/>Commandes autorisées uniquement"]
-        B["Clé SSH « terminal »<br/>Accès interactif"]
-    end
+```mermaid
+flowchart TD
+    P["Téléphone<br/>(application mobile)"]
 
-    subgraph PC["Tour · démarrage à la demande"]
-        W["Wake-on-LAN<br/>Paquet magique"]
-        C["Clé SSH restreinte<br/>Accès limité"]
-        T["Système principal"]
-    end
+    S["Serveur relais<br/>Toujours allumé"]
 
-    P -->|"SSH · mode sécurisé"| A
-    P -->|"SSH · terminal distant"| B
+    T["Tour<br/>Démarrage à la demande"]
 
-    A --> SERVER
-    B --> SERVER
+    P -->|"SSH · clé « actions »<br/>Liste fermée de commandes"| S
+    P -->|"SSH · clé « terminal »<br/>Accès interactif"| S
 
-    SERVER -->|"Réseau local · réveil"| W
-    SERVER -->|"SSH · connexion sécurisée"| C
-
-    W --> T
-    C --> T
-
-    classDef mobile fill:#DCEBFA,stroke:#3976B9,color:#16395C
-    classDef server fill:#DDF4E4,stroke:#39845A,color:#174B2B
-    classDef pc fill:#FCE8D5,stroke:#C47B35,color:#663B12
-
-    class P mobile
-    class A,B server
-    class W,C,T pc
+    S -->|"Wake-on-LAN<br/>Paquet magique"| T
+    S -->|"SSH · clé restreinte<br/>Accès limité"| T
+```
 
 
 Principes :
