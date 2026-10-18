@@ -1,11 +1,12 @@
 <!--
   Manifeste Android de l'application. Différences avec celui que crée
-  « flutter create » : permission Internet (pour SSH), sauvegardes désactivées
-  (la clé ne doit pas quitter le téléphone), activité FlutterFragmentActivity
-  (voir MainActivity.kt).
+  « flutter create » : permissions Internet (pour SSH) et empreinte digitale
+  (verrou), sauvegardes désactivées (la clé ne doit pas quitter le téléphone),
+  activité FlutterFragmentActivity (voir MainActivity.kt).
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <application
         android:label="Homelab"

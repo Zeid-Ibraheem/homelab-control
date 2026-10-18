@@ -46,16 +46,41 @@ check_int() { # check_int NOM VALEUR MIN MAX
   fi
 }
 
+# Services redémarrables depuis l'application : format, liste interdite, et
+# présence parmi les services suivis (sinon l'application ne les affiche pas).
+check_restartable() { # check_restartable NOM_CLÉ "REDÉMARRABLES" "SUIVIS"
+  local u bad=0
+  for u in $2; do
+    if ! hl_valid_restartable "$u"; then
+      say "  ✗ $1 : « $u » : minuscules, chiffres et tirets seulement, sans « .service »"; bad=1
+    elif hl_restart_denied "$u"; then
+      say "  ✗ $1 : « $u » ne peut pas être redémarré à distance (un échec couperait l'accès à la machine)"; bad=1
+    elif ! hl_in_list "$u" "$3"; then
+      say "  ✗ $1 : « $u » doit aussi figurer dans les services suivis"; bad=1
+    fi
+  done
+  return "$bad"
+}
+
 check_conf() {
   local bad=0
   hl_load_conf "$CONF" || die "configuration illisible : $CONF"
-  check_int AUTO_OFF_DEFAULT_HOURS "${AUTO_OFF_DEFAULT_HOURS:-8}" 1 720 || bad=1
+  local max=${AUTO_OFF_MAX_HOURS:-8} def=${AUTO_OFF_DEFAULT_HOURS:-8} wake=${AUTO_OFF_WAKE_HOURS:-${AUTO_OFF_DEFAULT_HOURS:-8}} u
+  check_int AUTO_OFF_DEFAULT_HOURS "$def" 1 720 || bad=1
+  check_int AUTO_OFF_WAKE_HOURS "$wake" 1 720 || bad=1
   check_int AUTO_OFF_EXTEND_HOURS "${AUTO_OFF_EXTEND_HOURS:-2}" 1 720 || bad=1
-  check_int AUTO_OFF_MAX_HOURS "${AUTO_OFF_MAX_HOURS:-48}" 1 720 || bad=1
+  check_int AUTO_OFF_MAX_HOURS "$max" 1 720 || bad=1
   check_int AUTO_OFF_SESSION_GRACE_MIN "${AUTO_OFF_SESSION_GRACE_MIN:-30}" 1 1440 || bad=1
-  if [ "$bad" -eq 0 ] && [ "${AUTO_OFF_MAX_HOURS:-48}" -lt "${AUTO_OFF_DEFAULT_HOURS:-8}" ]; then
-    say "  ✗ AUTO_OFF_MAX_HOURS doit être supérieur ou égal à AUTO_OFF_DEFAULT_HOURS"; bad=1
+  if [ "$bad" -eq 0 ] && { [ "$max" -lt "$def" ] || [ "$max" -lt "$wake" ]; }; then
+    say "  ✗ AUTO_OFF_MAX_HOURS (plafond) doit être supérieur ou égal à AUTO_OFF_DEFAULT_HOURS et à AUTO_OFF_WAKE_HOURS"; bad=1
   fi
+  for u in ${TOWER_SMART_DEVICES:-}; do
+    hl_valid_disk "$u" || { say "  ✗ TOWER_SMART_DEVICES : « $u » n'est pas un disque (/dev/nvme0n1, /dev/sda, /dev/disk/by-id/…)"; bad=1; }
+  done
+  for u in ${TOWER_SERVICES:-}; do
+    hl_valid_unit "$u" || { say "  ✗ TOWER_SERVICES : « $u » n'est pas un nom de service"; bad=1; }
+  done
+  check_restartable TOWER_RESTARTABLE "${TOWER_RESTARTABLE:-}" "${TOWER_SERVICES:-}" || bad=1
   case "${ACTION_LOG:-$LOGDIR/actions.log}" in
     "$LOGDIR"/*) ;;
     *) say "  ✗ ACTION_LOG doit se trouver dans $LOGDIR/"; bad=1 ;;
@@ -64,6 +89,8 @@ check_conf() {
     say "  ✗ TOWER_KEY_FROM invalide"; bad=1
   fi
   [ "$bad" -eq 0 ] || die "corrige $CONF (sudoedit $CONF), puis relance."
+  grep -Eq '^[[:space:]]*AUTO_OFF_WAKE_HOURS=' "$CONF" \
+    || say "  ! AUTO_OFF_WAKE_HOURS absent : une tour allumée par le serveur gardera $def h (ajoute la ligne AUTO_OFF_WAKE_HOURS=4)"
   [ -n "${TOWER_KEY_FROM:-}" ] || say "  ! TOWER_KEY_FROM est vide : la clé du serveur sera acceptée depuis n'importe quelle adresse"
   case ",${TOWER_KEY_FROM:-}," in
     *,192.0.2.*) say "  ! TOWER_KEY_FROM contient encore l'adresse d'exemple 192.0.2.x : mets celle du serveur sur le câble" ;;
@@ -81,6 +108,9 @@ do_install() {
   grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config \
     || die "Ajoute la ligne « Include /etc/ssh/sshd_config.d/*.conf » au début de /etc/ssh/sshd_config, puis relance."
   ok "outils présents"
+  if ! command -v smartctl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    say "  ! santé des disques indisponible sans smartctl et jq : sudo pacman -S --needed smartmontools jq"
+  fi
 
   # 2. Configuration (créée à partir du modèle au premier lancement)
   if [ ! -f "$CONF" ]; then
@@ -104,13 +134,15 @@ do_install() {
   fi
   # Aucun mot de passe utilisable (« * ») : connexion par clé uniquement.
   usermod -p '*' "$HL_USER"
-  chmod 750 "$HL_HOME"
-  install -d -o "$HL_USER" -g "$HL_USER" -m 700 "$HL_HOME/.ssh"
+  # Dossiers vérifiés un par un : jamais de lien suivi (voir hl_safe_dir).
+  hl_safe_dir "$HL_HOME" "$HL_USER" 750 || die "dossier $HL_HOME non sûr"
+  hl_safe_dir "$HL_HOME/.ssh" "$HL_USER" 700 || die "dossier $HL_HOME/.ssh non sûr"
+  [ ! -L "$HL_HOME/.ssh/authorized_keys" ] || die "$HL_HOME/.ssh/authorized_keys est un lien : arrêt"
   [ -f "$HL_HOME/.ssh/authorized_keys" ] \
     || install -o "$HL_USER" -g "$HL_USER" -m 600 /dev/null "$HL_HOME/.ssh/authorized_keys"
-  install -d -o "$HL_USER" -g "$HL_USER" -m 750 "$HL_HOME/state"
-  install -d -o "$HL_USER" -g "$HL_USER" -m 750 "$LOGDIR"
-  install -d -o root -g root -m 755 "$ROOT_STATE"
+  hl_safe_dir "$HL_HOME/state" "$HL_USER" 750 || die "dossier $HL_HOME/state non sûr"
+  hl_safe_dir "$LOGDIR" "$HL_USER" 750 || die "dossier $LOGDIR non sûr"
+  hl_safe_dir "$ROOT_STATE" root 755 || die "dossier $ROOT_STATE non sûr"
 
   # 4. Configuration : lisible par homelab, modifiable par root uniquement
   chown root:"$HL_USER" "$CONF"
@@ -124,16 +156,21 @@ do_install() {
   install -m 755 "$HERE/tour" "$BIN"
   ok "scripts installés"
 
-  # 6. sudo : uniquement éteindre et redémarrer, avec des arguments fixes
+  # 6. sudo : éteindre, redémarrer, lire la santé de la tour, et redémarrer
+  #    chaque service autorisé ; arguments fixes
   tmp=$(mktemp)
-  printf '%s ALL=(root) NOPASSWD: %s poweroff, %s reboot\n' "$HL_USER" "$LIBDIR/tour-root" "$LIBDIR/tour-root" > "$tmp"
+  hl_sudoers_line "$HL_USER" "$LIBDIR/tour-root" "poweroff reboot health" "${TOWER_RESTARTABLE:-}" > "$tmp"
   if ! visudo -cf "$tmp" >/dev/null; then rm -f "$tmp"; die "règle sudo invalide"; fi
   install -m 440 "$tmp" "$SUDOERS"
   rm -f "$tmp"
   tmp=$(sudo -l -U "$HL_USER" 2>/dev/null || true)
   grep -qF "$LIBDIR/tour-root poweroff" <<< "$tmp" \
     || die "sudo ne lit pas $SUDOERS : vérifie la ligne « @includedir /etc/sudoers.d » de /etc/sudoers (sudo visudo)"
-  ok "règle sudo limitée à « tour-root poweroff » et « tour-root reboot »"
+  for u in ${TOWER_RESTARTABLE:-}; do
+    grep -qF "$LIBDIR/tour-root restart $u" <<< "$tmp" || die "règle sudo incomplète pour « $u »"
+  done
+  ok "règle sudo limitée à « tour-root poweroff », « reboot » et « health »"
+  [ -z "${TOWER_RESTARTABLE:-}" ] || ok "services redémarrables depuis l'application : $TOWER_RESTARTABLE"
 
   # 7. Extinction automatique : vérification chaque minute
   install -m 644 "$HERE/homelab-autooff.service" "$UNITDIR/homelab-autooff.service"
@@ -181,6 +218,7 @@ do_add_key() { # do_add_key "CLÉ PUBLIQUE"
   printf '%s\n' "$key" > "$tmp"
   if ! fp=$(ssh-keygen -l -f "$tmp" 2>/dev/null); then rm -f "$tmp"; die "clé publique illisible"; fi
   rm -f "$tmp"
+  [ ! -L "$auth" ] || die "$auth est un lien : arrêt"
   blob=$(printf '%s' "$key" | cut -d' ' -f2)
   if grep -qF -- "$blob" "$auth" 2>/dev/null; then ok "clé déjà autorisée : $fp"; return 0; fi
   opts="restrict,command=\"$BIN\""
@@ -188,9 +226,9 @@ do_add_key() { # do_add_key "CLÉ PUBLIQUE"
     hl_valid_from "$TOWER_KEY_FROM" || die "TOWER_KEY_FROM invalide"
     opts+=",from=\"$TOWER_KEY_FROM\""
   fi
-  printf '%s %s\n' "$opts" "$key" >> "$auth"
-  chown "$HL_USER:$HL_USER" "$auth"
-  chmod 600 "$auth"
+  # Écrit avec les droits du compte homelab, jamais en root dans son dossier.
+  printf '%s %s\n' "$opts" "$key" | sudo -u "$HL_USER" sh -c 'umask 077; cat >> "$1"' sh "$auth" \
+    || die "écriture impossible dans $auth"
   ok "clé autorisée : $fp"
 }
 

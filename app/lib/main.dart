@@ -138,6 +138,6 @@ class _RootState extends State<Root> {
     if (!data.ready) {
       return SetupScreen(initial: data, onDone: (d) => setState(() => _data = d));
     }
-    return DashboardScreen(data: data, onReset: _reset);
+    return DashboardScreen(data: data, onReset: _reset, onStoreChanged: () => unawaited(_load()));
   }
 }

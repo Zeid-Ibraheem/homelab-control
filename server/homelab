@@ -8,15 +8,22 @@
 #
 # Actions :
 #   status          état du serveur, du câble et de la tour (JSON)
+#   health          santé du serveur et de la tour : services, disques, sécurité
 #   wake            allume la tour (paquet magique par le câble direct)
 #   tower-off       éteint la tour
 #   tower-reboot    redémarre la tour
 #   extend [H]      repousse l'extinction automatique de la tour de H heures
+#   extend-min M    repousse l'extinction automatique de la tour de M minutes
 #   off-in N        extinction automatique de la tour dans N minutes
 #   hold on|off     « ne pas éteindre » jusqu'au plafond, ou annuler
+#   restart S       redémarre le service S du serveur, s'il est dans SERVER_RESTARTABLE
+#   tower-restart S redémarre le service S de la tour (autorisé par sa configuration)
 #   log [N]         les N dernières actions du journal (1 à 200, défaut 20)
 #   actions         liste des actions disponibles
 #   version         version du script
+# En local seulement (jamais via SSH) :
+#   wake-follow     après un réveil, signale à la tour, dès qu'elle répond, que
+#                   l'allumage vient du serveur (lancé par homelab-root wake)
 #
 # Réponse : une ligne JSON. Code de sortie : 0 = ok, 1 = échec, 2 = refusé.
 # Utilisation locale sur le serveur : sudo -u homelab homelab status
@@ -31,13 +38,20 @@ STATE_DIR=/var/lib/homelab/state
 ROOT_HELPER=/usr/local/lib/homelab/homelab-root
 RELAY_KEY=/var/lib/homelab/.ssh/id_tower
 RELAY_KNOWN=/var/lib/homelab/.ssh/known_hosts_tower
+RELAY_TIMEOUT=10        # secondes, pour une commande relayée vers la tour
+FOLLOW_TRIES=54         # wake-follow : 54 essais, toutes les 10 s (9 minutes)
+FOLLOW_PAUSE=10
 
 # En local uniquement (jamais via SSH), les chemins peuvent être changés pour les tests.
 if [ -z "${SSH_CONNECTION:-}" ]; then
   LIB=${HOMELAB_LIB:-$LIB}
   CONF=${HOMELAB_CONF:-$CONF}
   STATE_DIR=${HOMELAB_STATE:-$STATE_DIR}
+  FOLLOW_TRIES=${HOMELAB_FOLLOW_TRIES:-$FOLLOW_TRIES}
+  FOLLOW_PAUSE=${HOMELAB_FOLLOW_PAUSE:-$FOLLOW_PAUSE}
 fi
+[[ $FOLLOW_TRIES =~ ^[1-9][0-9]{0,3}$ ]] || FOLLOW_TRIES=54
+[[ $FOLLOW_PAUSE =~ ^[0-9]{1,3}$ ]] || FOLLOW_PAUSE=10
 
 # shellcheck source=../common/lib.sh
 . "$LIB" 2>/dev/null || { printf '{"ok":false,"error":"internal","message":"bibliothèque introuvable"}\n'; exit 1; }
@@ -117,7 +131,7 @@ relay() { # relay "CHEMINS" COMMANDE…
     # de la tour, enregistrée à la toute première connexion.
     # AddressFamily=inet : toujours en IPv4, pour que l'adresse vue par la tour
     # corresponde à TOWER_KEY_FROM.
-    out=$(timeout 10 ssh -n -F /dev/null -i "$RELAY_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+    out=$(timeout "$RELAY_TIMEOUT" ssh -n -F /dev/null -i "$RELAY_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
           -o AddressFamily=inet -o ConnectTimeout=3 \
           -o StrictHostKeyChecking=accept-new -o HostKeyAlias=homelab-tower \
           -o UserKnownHostsFile="$RELAY_KNOWN" -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR \
@@ -132,18 +146,43 @@ relay() { # relay "CHEMINS" COMMANDE…
   return 4
 }
 
-tower_json() {
+tower_json() { # tower_json [COMMANDE] : réponse de la tour à « status » (ou à COMMANDE)
   local paths res
   paths=$(tower_paths)
   if [ -z "$paths" ]; then
     printf '"online":false,"via":null,"detail":null'
     return
   fi
-  if res=$(relay "$paths" status); then
+  if res=$(relay "$paths" "${1:-status}"); then
     printf '"online":true,"via":"%s","detail":%s' "${res%% *}" "${res#* }"
   else
     printf '"online":true,"via":"%s","detail":null' "${paths%% *}"
   fi
+}
+
+webcam_json() { # port local de la webcam (joignable par tunnel SSH), ou null
+  if hl_in_range "${WEBCAM_PORT:-}" 1 65535; then
+    printf '"webcam":{"port":%d}' "$WEBCAM_PORT"
+  else
+    printf '"webcam":null'
+  fi
+}
+
+schedule_json() { # allumages programmés (WAKE_SCHEDULE) et prochain allumage
+  local spec v next=null first=1
+  local -a specs=()
+  IFS=';' read -r -a specs <<< "${WAKE_SCHEDULE:-}"
+  printf '"wake_schedule":{"specs":['
+  for spec in "${specs[@]}"; do
+    spec=${spec#"${spec%%[![:space:]]*}"}
+    spec=${spec%"${spec##*[![:space:]]}"}
+    [[ $spec =~ ^[A-Za-z0-9\ ,:*./~-]{1,80}$ ]] || continue
+    if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
+    hl_json_str "$spec"
+  done
+  v=$(timeout 3 systemctl show homelab-wake.timer -p NextElapseUSecRealtime --value --timestamp=unix 2>/dev/null) || v=""
+  [[ $v =~ ^@([0-9]{1,12})$ ]] && next=$(hl_json_str "$(hl_iso "${BASH_REMATCH[1]}")")
+  printf '],"next":%s}' "$next"
 }
 
 # ── Actions ──────────────────────────────────────────────────────────────────
@@ -164,9 +203,50 @@ cmd_status() {
   wait "$pid"
   tower=$(<"$probe")
   rm -f "$probe"
-  printf '{"ok":true,"api":%d,"time":%s,"server":{"uptime_s":%d,"load":[%s,%s,%s],"cpu_pct":%s,"mem_used_pct":%s,"temp_c":%s,"disk_used_pct":%s,%s},"link":{%s},"tower":{%s}}\n' \
+  printf '{"ok":true,"api":%d,"time":%s,"server":{"uptime_s":%d,"load":[%s,%s,%s],"cpu_pct":%s,"mem_used_pct":%s,"temp_c":%s,"disk_used_pct":%s,%s,%s},"link":{%s},"tower":{%s},%s,%s}\n' \
     "$HOMELAB_API" "$(hl_json_str "$(hl_now)")" "${up:-0}" "$l1" "$l5" "$l15" \
-    "$cpu" "$mem" "$temp" "$disk" "$power" "$link" "$tower"
+    "$cpu" "$mem" "$temp" "$disk" "$power" "$(hl_wifi_json)" "$link" "$tower" "$(webcam_json)" "$(schedule_json)"
+}
+
+cmd_health() {
+  local probe pid priv tower
+  probe=$(mktemp) || hl_fail_json internal "fichier temporaire impossible"
+  RELAY_TIMEOUT=25                 # lecture des disques de la tour comprise
+  tower_json health > "$probe" &   # la tour est interrogée en parallèle
+  pid=$!
+  # Disques et sécurité : lecture en root, par la seule commande autorisée.
+  priv=$(sudo -n "$ROOT_HELPER" health 2>/dev/null) || priv=""
+  [[ $priv == '"disks":'* && $priv != *$'\n'* ]] || priv='"disks":null,"security":null'
+  wait "$pid"
+  tower=$(<"$probe")
+  rm -f "$probe"
+  printf '{"ok":true,"api":%d,"time":%s,"server":{%s,%s},"tower":{%s}}\n' \
+    "$HOMELAB_API" "$(hl_json_str "$(hl_now)")" \
+    "$(hl_services_json "${SERVER_SERVICES:-}" "${SERVER_RESTARTABLE:-}")" "$priv" "$tower"
+}
+
+# Après un réveil (lancé par homelab-root wake, avec le compte homelab) :
+# attend que la tour réponde, puis lui signale que l'allumage vient du serveur.
+cmd_wake_follow() {
+  local i paths res out
+  for ((i = 0; i < FOLLOW_TRIES; i++)); do
+    [ "$i" -gt 0 ] && sleep "$FOLLOW_PAUSE"
+    paths=$(tower_paths)
+    [ -n "$paths" ] || continue
+    res=$(relay "$paths" woke-by-server) || continue
+    out=${res#* }
+    if [[ $out == '{"ok":true'* ]]; then
+      hl_log_action wake-follow marked
+      printf '%s\n' "$out"
+      return 0
+    fi
+    # Refusé par la tour (par exemple, elle était déjà allumée) : on s'arrête.
+    hl_log_action wake-follow refused_by_tower
+    printf '%s\n' "$out"
+    return 1
+  done
+  hl_log_action wake-follow timeout
+  return 1
 }
 
 cmd_wake() {
@@ -248,7 +328,7 @@ cmd_log() { # cmd_log N
 }
 
 cmd_actions() {
-  printf '{"ok":true,"actions":["status","wake","tower-off","tower-reboot","extend","off-in","hold","log","actions","version"]}\n'
+  printf '{"ok":true,"actions":["status","health","wake","tower-off","tower-reboot","extend","extend-min","off-in","hold","restart","tower-restart","log","actions","version"]}\n'
 }
 
 cmd_version() {
@@ -264,6 +344,14 @@ case "$ACTION" in
   status)
     [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "status ne prend pas d'argument"
     cmd_status ;;
+  health)
+    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "health ne prend pas d'argument"
+    cmd_health ;;
+  wake-follow)
+    # Jamais depuis le téléphone : seulement la tâche lancée par homelab-root.
+    [ "$VIA" != "ssh" ] || hl_refuse "unknown_action" "action inconnue"
+    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "wake-follow ne prend pas d'argument"
+    cmd_wake_follow ;;
   wake)
     [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "wake ne prend pas d'argument"
     cmd_wake ;;
@@ -281,6 +369,10 @@ case "$ACTION" in
     else
       cmd_tower extend extend
     fi ;;
+  extend-min)
+    [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : extend-min M"
+    hl_in_range "${ARGS[1]}" 1 43200 || hl_refuse "bad_args" "M doit être un nombre de minutes entre 1 et 43200"
+    cmd_tower extend-min extend-min "${ARGS[1]}" ;;
   off-in)
     [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : off-in N"
     hl_in_range "${ARGS[1]}" 1 10080 || hl_refuse "bad_args" "N doit être un nombre de minutes entre 1 et 10080"
@@ -291,6 +383,17 @@ case "$ACTION" in
       on|off) cmd_tower "hold ${ARGS[1]}" hold "${ARGS[1]}" ;;
       *)      hl_refuse "bad_args" "usage : hold on|off" ;;
     esac ;;
+  restart)
+    [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : restart SERVICE"
+    hl_restart_allowed "${ARGS[1]}" "${SERVER_RESTARTABLE:-}" \
+      || hl_refuse "not_allowed" "service non autorisé au redémarrage (SERVER_RESTARTABLE)"
+    hl_restart_reply "$ROOT_HELPER" "${ARGS[1]}" ;;
+  tower-restart)
+    # La liste des services autorisés est celle de la tour : elle décide.
+    [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : tower-restart SERVICE"
+    hl_valid_restartable "${ARGS[1]}" || hl_refuse "bad_args" "nom de service invalide"
+    RELAY_TIMEOUT=60               # redémarrage : 45 s au plus sur la tour
+    cmd_tower "tower-restart ${ARGS[1]}" restart "${ARGS[1]}" ;;
   log)
     [ "$NARGS" -le 2 ] || hl_refuse "bad_args" "usage : log [N]"
     N=${ARGS[1]:-20}

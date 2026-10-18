@@ -54,10 +54,83 @@ Uint8List bytesOfHex(String hex) => Uint8List.fromList([
         int.parse(hex.substring(i, i + 2), radix: 16),
     ]);
 
-/// Empreinte d'une clé, au format affiché par ssh-keygen :
-/// 16 octets = MD5 (« MD5:xx:xx:… »), 32 octets = SHA-256 (« SHA256:… »).
+/// Empreinte d'une clé, au format affiché par ssh-keygen. dartssh2 la donne
+/// déjà en texte (« SHA256:… ») ; sinon, 32 octets bruts = SHA-256 et
+/// 16 octets = MD5 (« MD5:xx:xx:… »).
 String fingerprintText(List<int> fp) {
+  final printable = fp.isNotEmpty && fp.every((b) => b >= 0x20 && b < 0x7f);
+  if (printable) {
+    final text = String.fromCharCodes(fp);
+    if (text.startsWith('SHA256:') || text.startsWith('MD5:')) return text;
+  }
   if (fp.length == 32) return 'SHA256:${base64.encode(fp).replaceAll('=', '')}';
   final pairs = [for (final b in fp) b.toRadixString(16).padLeft(2, '0')];
   return fp.length == 16 ? 'MD5:${pairs.join(':')}' : pairs.join(':');
+}
+
+const _dayNames = {
+  'mon': 'lundi',
+  'tue': 'mardi',
+  'wed': 'mercredi',
+  'thu': 'jeudi',
+  'fri': 'vendredi',
+  'sat': 'samedi',
+  'sun': 'dimanche',
+};
+
+/// Allumage programmé (format des minuteurs systemd), en clair quand c'est
+/// possible : « Mon..Fri *-*-* 07:45:00 » → « du lundi au vendredi à 07:45 ».
+/// Une forme moins courante est rendue telle quelle.
+String describeSchedule(String spec) {
+  final m = RegExp(r'^(?:([A-Za-z.,]+) )?\*-\*-\* (\d{1,2}):(\d{2})(?::00)?$').firstMatch(spec.trim());
+  if (m == null) return spec;
+  final time = '${m.group(2)!.padLeft(2, '0')}:${m.group(3)}';
+  final days = m.group(1);
+  if (days == null) return 'tous les jours à $time';
+  final parts = <String>[];
+  for (final item in days.split(',')) {
+    final names = [for (final d in item.split('..')) _dayNames[d.toLowerCase()]];
+    if (names.isEmpty || names.length > 2 || names.contains(null)) return spec;
+    parts.add(names.length == 2 ? 'du ${names[0]} au ${names[1]}' : names[0]!);
+  }
+  final joined = parts.length == 1
+      ? parts.first
+      : '${parts.sublist(0, parts.length - 1).join(', ')} et ${parts.last}';
+  final prefix = parts.length == 1 && !joined.startsWith('du ') ? 'le ' : '';
+  return '$prefix$joined à $time';
+}
+
+/// Signal Wi-Fi en clair, d'après les repères habituels :
+/// -55 dBm ou plus = excellent ; -67 = bon (vidéo, appels) ; -75 = moyen ;
+/// -82 = faible ; en dessous, la connexion décroche.
+String wifiText(int dbm) {
+  final quality = dbm >= -55
+      ? 'excellent'
+      : dbm >= -67
+          ? 'bon'
+          : dbm >= -75
+              ? 'moyen'
+              : dbm >= -82
+                  ? 'faible'
+                  : 'très faible';
+  return '$dbm dBm ($quality)';
+}
+
+/// État d'un service systemd, en français.
+String serviceStateText(String state) => switch (state) {
+      'active' => 'actif',
+      'inactive' => 'arrêté',
+      'failed' => 'en échec',
+      'activating' => 'démarrage',
+      'deactivating' => 'arrêt en cours',
+      'reloading' => 'rechargement',
+      'unknown' => 'inconnu',
+      _ => state,
+    };
+
+/// Temps de fonctionnement d'un disque : « 36 h », « 51 j », « 2,3 ans ».
+String powerOnText(int hours) {
+  if (hours < 48) return '$hours h';
+  if (hours < 24 * 365) return '${hours ~/ 24} j';
+  return '${(hours / 8766).toStringAsFixed(1).replaceAll('.', ',')} ans';
 }

@@ -3,16 +3,15 @@
 Application mobile et scripts pour piloter un petit homelab depuis un téléphone :
 allumer et éteindre une tour, suivre l'état des machines, ouvrir un terminal.
 
-> **Statut : phase 3 en cours.** Depuis un terminal, par SSH : allumer,
-> éteindre et redémarrer la tour, programmer son allumage, suivre son état et
-> son extinction automatique. L'application Android fait la même chose avec
-> des boutons (à valider sur le téléphone).
+> **Statut : phases 0 à 6 écrites.** Côté machines (scripts du serveur et de
+> la tour), tout est testé. L'application Android est complète, mais reste à
+> valider sur le téléphone.
 
-## Ce que fera le projet
+## Ce que fait le projet
 
 - Allumer la tour à distance (Wake-on-LAN), l'éteindre, la redémarrer, programmer son allumage
-- Extinction automatique de la tour : échéance prolongeable, bouton « ne pas éteindre », plafond absolu, jamais pendant qu'on l'utilise
-- Surveillance du serveur et de la tour : processeur, mémoire, températures, disques (SMART), services
+- Extinction automatique de la tour : 4 h si le serveur l'a allumée, 8 h à la main, prolongeable d'une durée au choix jusqu'au plafond, bouton « ne pas éteindre », jamais pendant qu'on l'utilise
+- Surveillance du serveur et de la tour : processeur, mémoire, températures, réseau (câble, signal Wi-Fi), disques (SMART), services, avec redémarrage des services autorisés
 - Tableau de bord sécurité et journal de toutes les actions
 - Terminal SSH vers chaque machine
 - Webcam, sans aucun port exposé (passage par un tunnel SSH)

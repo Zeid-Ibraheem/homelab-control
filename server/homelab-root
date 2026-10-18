@@ -6,7 +6,13 @@
 # /etc/sudoers.d/homelab. Ne lit aucune variable d'environnement : sudo les
 # efface, et les chemins sont écrits en dur ci-dessous.
 #
-#   wake   relance le lien vers la tour si besoin, puis envoie le paquet magique
+#   wake     relance le lien vers la tour si besoin, envoie le paquet magique,
+#            puis lance la tâche qui signalera à la tour, dès qu'elle répond,
+#            que cet allumage vient du serveur (homelab wake-follow)
+#   health   lecture seule : santé des disques (SMART) et sécurité sur 24 h
+#            (connexions SSH, pare-feu), en fragment JSON
+#   restart S  redémarre le service S, s'il est dans SERVER_RESTARTABLE (sudo
+#            n'autorise d'ailleurs que ces services, un par un)
 # =============================================================================
 set -euo pipefail
 umask 022
@@ -16,7 +22,10 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 . /usr/local/lib/homelab/lib.sh
 hl_load_conf /etc/homelab/homelab.conf || { echo "configuration illisible" >&2; exit 1; }
 
-[ "$#" -eq 1 ] || { echo "usage : homelab-root wake" >&2; exit 2; }
+case "$#:${1:-}" in
+  1:wake|1:health|2:restart) ;;
+  *) echo "usage : homelab-root wake|health|restart SERVICE" >&2; exit 2 ;;
+esac
 
 carrier() { [ "$(cat "/sys/class/net/$LINK_INTERFACE/carrier" 2>/dev/null)" = "1" ]; }
 
@@ -37,6 +46,17 @@ case "$1" in
       done
     fi
     etherwake -i "$LINK_INTERFACE" "$TOWER_MAC"
+    # Tâche à part, avec le compte homelab, limitée à 10 minutes ; une seule à
+    # la fois (si elle tourne déjà, systemd refuse la seconde).
+    systemd-run --quiet --no-block --collect --unit=homelab-wake-follow \
+      --uid=homelab --gid=homelab -p RuntimeMaxSec=600 \
+      /usr/local/bin/homelab wake-follow >/dev/null 2>&1 || true
+    ;;
+  health)
+    printf '%s,%s\n' "$(hl_disks_json "${SERVER_SMART_DEVICES:-}")" "$(hl_security_json)"
+    ;;
+  restart)
+    hl_restart_service "$2" "${SERVER_RESTARTABLE:-}"
     ;;
   *)
     echo "action inconnue" >&2

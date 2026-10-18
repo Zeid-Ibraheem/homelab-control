@@ -1,13 +1,13 @@
 # server/
 
-Point d'entrée du téléphone sur le **serveur toujours allumé** (phases 1 et 2) : il répond lui-même, ou relaie vers la tour.
+Point d'entrée du téléphone sur le **serveur toujours allumé** (phases 1, 2, 4 et 6) : il répond lui-même, ou relaie vers la tour.
 
 ## Contenu
 
 | Fichier | Installé dans | Rôle |
 |---|---|---|
 | `homelab` | `/usr/local/bin/homelab` | Script lancé par la clé « actions » : liste fermée d'actions, réponses en JSON, journal |
-| `homelab-root` | `/usr/local/lib/homelab/homelab-root` | La seule action qui demande les droits root (le réveil), autorisée par `sudo` avec un argument fixe |
+| `homelab-root` | `/usr/local/lib/homelab/homelab-root` | Les seules actions qui demandent les droits root (réveil, lecture des disques et des journaux, redémarrage d'un service autorisé), permises par `sudo` avec des arguments fixes |
 | `sshd-homelab.conf` | `/etc/ssh/sshd_config.d/50-homelab.conf` | Le compte `homelab` ne peut lancer que le script |
 | `install.sh` | | Installation, ajout d'une clé, désinstallation |
 
@@ -20,10 +20,10 @@ Le serveur joint la tour par le câble direct s'il répond, sinon par le VPN, to
 ## Les protections, de l'extérieur vers l'intérieur
 
 1. **Compte dédié** `homelab` : sans mot de passe, sans droits d'administrateur.
-2. **La clé « actions »** est enregistrée avec `restrict,command="…",from="…"` : pas de terminal, pas de tunnel, uniquement depuis le VPN.
+2. **La clé « actions »** est enregistrée avec `restrict,command="…",from="…"` : pas de terminal, uniquement depuis le VPN, et aucun tunnel, sauf celui vers la webcam si elle est configurée (vers son seul port local).
 3. **SSH impose le script** à ce compte (`ForceCommand`), même si une clé était ajoutée sans restriction.
 4. **Le script** n'exécute jamais le texte reçu : il le compare à une liste fermée d'actions, n'accepte que des minuscules, chiffres, espaces et tirets (64 caractères au plus) et vérifie chaque argument.
-5. **`sudo`** n'autorise qu'une seule commande, avec un argument fixe : `homelab-root wake`.
+5. **`sudo`** n'autorise que des commandes aux arguments fixes : `homelab-root wake`, `homelab-root health` (lecture seule), et `homelab-root restart NOM` pour chaque service de `SERVER_RESTARTABLE`, un par un.
 6. **La configuration est lue sans être exécutée**, et chaque valeur est validée avant d'être utilisée dans une commande.
 
 ## Installation
@@ -81,13 +81,17 @@ Host hl
 
 | Commande | Effet |
 |---|---|
-| `ssh hl status` | État du serveur, du câble et de la tour (avec l'échéance d'extinction si elle est allumée) |
+| `ssh hl status` | État du serveur, du câble et de la tour (avec l'échéance d'extinction si elle est allumée), port de la webcam, allumages programmés |
+| `ssh hl health` | Santé du serveur et de la tour : services, disques (SMART), sécurité sur 24 h |
 | `ssh hl wake` | Allume la tour : `sent`, `already_on`, `ignored_recent` ou `busy` |
 | `ssh hl tower-off` | Éteint la tour (`already_off` si elle l'est déjà) |
 | `ssh hl tower-reboot` | Redémarre la tour |
 | `ssh hl extend` ou `ssh hl extend 3` | Repousse l'extinction automatique (durée par défaut, ou 3 h), dans la limite du plafond |
+| `ssh hl extend-min 45` | Repousse l'extinction automatique de 45 minutes (1 à 43200) |
 | `ssh hl off-in 30` | Extinction automatique dans 30 minutes (1 à 10080) |
 | `ssh hl hold on` / `ssh hl hold off` | « Ne pas éteindre » jusqu'au plafond, ou annuler |
+| `ssh hl restart cups` | Redémarre le service `cups` du serveur, s'il est dans `SERVER_RESTARTABLE` |
+| `ssh hl tower-restart cups` | Redémarre le service `cups` de la tour, s'il est dans le `TOWER_RESTARTABLE` de la tour |
 | `ssh hl log 10` | Les 10 dernières actions du serveur (1 à 200) |
 | `ssh hl actions` | Liste des actions |
 | `ssh hl version` | Version du script |
@@ -99,22 +103,61 @@ Exemple de réponse à `status`, tour allumée, avec des valeurs fictives :
 ```json
 {"ok":true,"api":1,"time":"2026-01-01T12:00:00+01:00",
  "server":{"uptime_s":345600,"load":[0.08,0.12,0.10],"cpu_pct":2.3,"mem_used_pct":21.4,
-           "temp_c":41.0,"disk_used_pct":12,"battery_pct":64,"on_ac":true},
+           "temp_c":41.0,"disk_used_pct":12,"battery_pct":64,"on_ac":true,
+           "wifi":{"iface":"wlan0","signal_dbm":-58}},
  "link":{"present":true,"carrier":true},
  "tower":{"online":true,"via":"link","detail":{"ok":true,"api":1,"time":"…",
           "uptime_s":5400,"boot_time":"2026-01-01T10:30:00+01:00","cpu_pct":3.1,
           "mem_used_pct":18.2,"cpu_temp_c":44.0,"gpu_temp_c":39.0,"disk_used_pct":35,
-          "session_active":false,"busy":null,
-          "auto_off":{"deadline":"2026-01-01T18:30:00+01:00","remaining_s":23400,
-                      "hold":false,"cap":"2026-01-03T10:30:00+01:00","delayed":false}}}}
+          "wifi":null,"session_active":false,"busy":null,
+          "auto_off":{"deadline":"2026-01-01T14:30:00+01:00","remaining_s":9000,
+                      "hold":false,"cap":"2026-01-01T18:30:00+01:00","delayed":false,
+                      "origin":"server"}}},
+ "webcam":{"port":8080},
+ "wake_schedule":{"specs":["Mon..Fri *-*-* 07:45:00"],"next":"2026-01-02T07:45:00+01:00"}}
 ```
 
 (sur une seule ligne en réalité ; `ssh hl status | jq` pour l'afficher joliment)
 
+- `server.wifi` : signal Wi-Fi en dBm (décibels-milliwatts : vers -50 excellent, vers -80 à peine utilisable), lu dans `/proc/net/wireless` ; `null` si la machine n'est pas connectée en Wi-Fi.
 - `tower.via` : `link` (le câble), `vpn`, ou `null` si la tour est éteinte.
 - `tower.detail` : la réponse du script de la tour (champs expliqués dans [`tower/README.md`](../tower/README.md#actions)), ou `null` si elle ne répond pas encore (par exemple en plein démarrage).
 
 Une action relayée renvoie la réponse de la tour dans `tower`. Erreurs possibles : `tower_offline` (tour éteinte ou injoignable), `relay_failed` (la tour n'a pas répondu correctement), `tower_error` (la tour a refusé ; sa réponse est jointe).
+
+## Après un réveil
+
+Quand `wake` envoie le paquet de réveil, `homelab-root` lance aussi une tâche à part (`homelab-wake-follow`, avec le compte `homelab`, 10 minutes au plus). Elle attend que la tour réponde, puis lui signale que ce démarrage vient du serveur : la tour s'éteindra alors après `AUTO_OFF_WAKE_HOURS` (4 h) au lieu de `AUTO_OFF_DEFAULT_HOURS` (8 h, allumage à la main). Voir [`tower/README.md`](../tower/README.md#lextinction-automatique). Cette action n'est jamais accessible depuis le téléphone.
+
+## Santé
+
+`ssh hl health` réunit la santé du serveur et, si elle est allumée, celle de la tour : services suivis (`SERVER_SERVICES`), disques (`SERVER_SMART_DEVICES`, lus par SMART avec `smartctl` et `jq`, installés par `install.sh`), et sécurité sur 24 h (connexions SSH réussies hors compte `homelab`, tentatives refusées, paquets bloqués par ufw). Les disques et les journaux sont lus en root par `homelab-root health`, seule commande de lecture autorisée par `sudo` ; la réponse peut prendre quelques secondes.
+
+## Redémarrer un service
+
+Pour qu'un service puisse être redémarré depuis l'application (par exemple un service qui plante de temps en temps), l'ajouter à `SERVER_RESTARTABLE` dans `/etc/homelab/homelab.conf`, sans « .service » :
+
+```bash
+SERVER_SERVICES="ssh tailscaled cups"
+SERVER_RESTARTABLE="cups"
+```
+
+Puis relancer `install.sh`. Il vérifie chaque nom et ajoute à la règle `sudo` une entrée `homelab-root restart cups` par service : `sudo` refuse tout autre nom, et `homelab-root` revérifie la liste. Règles :
+
+- noms en minuscules, chiffres et tirets (48 caractères au plus), et présents dans `SERVER_SERVICES` (sinon l'application ne les affiche pas) ;
+- **jamais** `ssh`, `sshd`, `tailscaled`, `dbus`, `dbus-broker`, `polkit`, `networking`, `iwd`, ni `systemd-…`, même s'ils sont listés : un redémarrage raté couperait l'accès à la machine ;
+- au-delà de 45 secondes, la réponse est `pending` : systemd termine le redémarrage, l'état se relit dans la santé.
+
+Pour la tour, c'est `TOWER_RESTARTABLE`, dans la configuration **de la tour** : c'est elle qui décide (voir [`tower/README.md`](../tower/README.md#redémarrer-un-service)).
+
+## Webcam
+
+Le serveur vidéo (par exemple ustreamer) doit n'écouter que sur la machine elle-même (`127.0.0.1`) ; vérifier avec `ss -ltnp`. Avec `WEBCAM_PORT` renseigné, `install.sh` :
+
+- autorise le compte `homelab` à ouvrir **un seul** tunnel, vers `127.0.0.1:WEBCAM_PORT` (`AllowTcpForwarding local` et `PermitOpen` dans le réglage SSH, vérifiés avec `sshd -T`) ;
+- donne aux clés « actions » l'option `port-forwarding,permitopen="127.0.0.1:PORT"`, y compris à celles déjà autorisées (relancer `install.sh` après un changement de `WEBCAM_PORT`).
+
+L'application affiche le flux MJPEG (`/stream`) à travers ce tunnel : aucun port vidéo n'est ouvert sur le réseau. Avec `WEBCAM_PORT` vide, plus aucun tunnel n'est possible.
 
 ## Allumage programmé
 

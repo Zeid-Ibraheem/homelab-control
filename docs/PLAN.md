@@ -26,7 +26,7 @@ flowchart LR
 ```
 
 - Le téléphone ne parle qu'au serveur, toujours joignable, qui relaie vers la tour.
-- **Clé « actions »** : elle appartient à un compte dédié, `homelab`, sans mot de passe ni droits d'administrateur, et elle est liée à une commande forcée. Quoi qu'on envoie, seul le script `homelab` s'exécute, et il n'accepte qu'une liste fermée d'actions. La seule action qui demande les droits root (le réveil) passe par un petit script autorisé par `sudo` avec un argument fixe.
+- **Clé « actions »** : elle appartient à un compte dédié, `homelab`, sans mot de passe ni droits d'administrateur, et elle est liée à une commande forcée. Quoi qu'on envoie, seul le script `homelab` s'exécute, et il n'accepte qu'une liste fermée d'actions. Les actions qui demandent les droits root (réveil, lecture des disques et des journaux, redémarrage d'un service autorisé) passent par un petit script autorisé par `sudo` avec des arguments fixes.
 - **Clé « terminal »** : accès complet, protégée dans l'application par l'empreinte digitale à chaque utilisation.
 - Le serveur se connecte à la tour avec une clé elle aussi restreinte au script `tour`, et les droits administrateur de la tour sont limités par `sudoers` aux seules commandes nécessaires.
 
@@ -38,16 +38,18 @@ flowchart LR
 | Éteindre et redémarrer la tour | 1-2 |
 | Temps depuis l'allumage, temps restant avant extinction | 2 |
 | Extinction automatique : échéance par défaut, « prolonger », « éteindre dans N minutes », plafond absolu | 2 |
+| Durée selon l'allumage (4 h par le serveur, 8 h à la main = le plafond), prolongation d'une durée au choix | 4 |
 | Bouton « ne pas éteindre » temporaire, dans la limite du plafond | 2 |
 | Jamais d'extinction automatique pendant qu'on utilise la tour : session ouverte, mise à jour, tâche protégée par `systemd-inhibit` | 2 |
 | Allumage programmé (dates au format systemd, dans la configuration du serveur) | 2 |
 | Journal de toutes les actions | 1 |
-| Surveillance du serveur et de la tour : processeur, mémoire, températures, réseau | 4 |
+| Surveillance du serveur et de la tour : processeur, mémoire, températures, réseau (câble, signal Wi-Fi) | 4 |
 | Santé des disques (SMART) | 4 |
 | État des services, avec redémarrage d'un service autorisé | 4 |
 | Tableau de bord sécurité : dernières connexions SSH, refus du pare-feu | 4 |
 | Terminal vers le serveur et la tour | 5 |
 | Webcam via un tunnel SSH, sans port exposé | 6 |
+| Affichage des allumages programmés et du prochain allumage | 6 |
 
 ## Écarté, et pourquoi
 
@@ -68,9 +70,11 @@ Chaque phase a un critère de fin vérifiable.
 | **1** ✅ | Script `homelab` sur le serveur : compte dédié, actions `status`, `wake`, `log`, état en JSON, journal (voir [`server/README.md`](../server/README.md)) | Depuis un terminal du téléphone : allumer la tour, lire l'état, consulter le journal |
 | **2** ✅ | Script `tour`, extinction automatique (repoussée tant que la tour est utilisée), relais du serveur vers la tour (câble, puis VPN en secours), allumage programmé, `sudoers` limité (voir [`tower/README.md`](../tower/README.md)) | La tour s'éteint seule à l'échéance, même si le serveur et le téléphone sont hors ligne |
 | **3** 🚧 | Application minimale : verrou (empreinte ou code), clé SSH créée sur le téléphone, vérification de la clé du serveur, tableau de bord, boutons principaux, journal (voir [`app/README.md`](../app/README.md)) | Allumer, éteindre et prolonger depuis l'application |
-| **4** | Surveillance complète : disques, services, sécurité | Tous les indicateurs visibles dans l'application |
-| **5** | Terminal intégré | Session interactive vers chaque machine depuis l'application |
-| **6** | Webcam par tunnel SSH, affichage des allumages programmés | Flux visible, serveur vidéo en écoute locale uniquement |
+| **4** 🚧 | Surveillance complète : disques (SMART), services avec redémarrage des services autorisés, sécurité, signal Wi-Fi ; durée de l'extinction selon l'allumage, prolongation au choix | Tous les indicateurs visibles dans l'application |
+| **5** 🚧 | Terminal intégré, vers le serveur et vers la tour (en passant par le serveur), avec une clé séparée | Session interactive vers chaque machine depuis l'application |
+| **6** 🚧 | Webcam par tunnel SSH, affichage des allumages programmés | Flux visible, serveur vidéo en écoute locale uniquement |
+
+🚧 = code écrit ; la partie machines est testée, l'application reste à valider sur le téléphone.
 
 ## Contrat d'échange (première version)
 
@@ -89,7 +93,8 @@ Le script `homelab` répond par une ligne JSON. Toute réponse contient `ok` ; e
     "temp_c": 41.0,
     "disk_used_pct": 12,
     "battery_pct": 64,
-    "on_ac": true
+    "on_ac": true,
+    "wifi": { "iface": "wlan0", "signal_dbm": -58 }
   },
   "link": { "present": true, "carrier": true },
   "tower": { "online": false, "via": null, "detail": null }
@@ -109,11 +114,11 @@ Codes de sortie : 0 = ok, 1 = échec, 2 = commande refusée.
 | Application | Flutter | Une seule base de code, interface native |
 | SSH et transfert de fichiers | dartssh2 | Client SSH en Dart pur, avec SFTP |
 | Terminal | xterm.dart | Émulateur de terminal complet, prévu pour dartssh2 |
-| Verrou de l'application | local_auth, flutter_secure_storage | Empreinte digitale et stockage chiffré d'Android |
+| Verrou de l'application | local_auth, flutter_secure_storage | Empreinte digitale ; stockage chiffré en AES-GCM, clé protégée par le Keystore d'Android |
 | Côté machines | Bash, systemd, sudoers, `authorized_keys` | Rien à installer, rien de nouveau qui tourne en permanence |
 
 ## Points à vérifier pendant le développement
 
-- Clé SSH de l'application : créée sur le téléphone, gardée dans le stockage chiffré d'Android (clé de chiffrement dans le Keystore). Possible amélioration : une clé liée à l'empreinte elle-même (déchiffrable seulement après le capteur), si une bibliothèque fiable le permet.
-- Valeurs de l'extinction automatique (8 h, +2 h, plafond de 48 h, délai de 30 min devant la tour) : réglables dans la configuration.
+- Clé SSH de l'application : créée sur le téléphone, gardée dans le stockage chiffré (clé de chiffrement protégée par le Keystore). Possible amélioration : un stockage déchiffrable seulement après l'empreinte elle-même (`AndroidOptions.biometric` de flutter_secure_storage 11), à essayer sur le téléphone avant de l'adopter.
+- Valeurs de l'extinction automatique (8 h à la main, 4 h par le serveur, +2 h, plafond de 8 h, délai de 30 min devant la tour) : réglables dans la configuration.
 - Détection du verrouillage de l'écran par KDE (`LockedHint`) : à vérifier une fois sur la tour (procédure dans [`tower/README.md`](../tower/README.md#à-vérifier-une-fois-sur-la-tour)).

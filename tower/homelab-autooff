@@ -5,7 +5,9 @@
 # Lancé chaque minute par homelab-autooff.timer, en root. Il fonctionne seul :
 # même si le serveur ou le téléphone sont hors ligne, la tour s'éteint à
 # l'échéance. Règles (valeurs dans /etc/homelab/homelab.conf) :
-#   - à chaque démarrage : échéance = démarrage + AUTO_OFF_DEFAULT_HOURS ;
+#   - à chaque démarrage : échéance = démarrage + AUTO_OFF_WAKE_HOURS si le
+#     serveur a allumé la tour (réveil par le réseau, redémarrage à distance),
+#     démarrage + AUTO_OFF_DEFAULT_HOURS sinon (bouton) ;
 #   - « prolonger », « éteindre dans N min » et « ne pas éteindre » la
 #     déplacent, jamais au-delà du plafond = démarrage + AUTO_OFF_MAX_HOURS ;
 #   - à l'échéance, si la tour est utilisée, rien n'est éteint : l'extinction

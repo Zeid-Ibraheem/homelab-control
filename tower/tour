@@ -7,14 +7,19 @@
 # liste fermée d'actions.
 #
 # Actions :
-#   status        état de la tour et de son extinction automatique (JSON)
-#   shutdown      éteint la tour (dans 3 secondes)
-#   reboot        redémarre la tour (dans 3 secondes)
-#   extend [H]    repousse l'échéance de H heures (défaut : AUTO_OFF_EXTEND_HOURS)
-#   off-in N      échéance dans N minutes (1 à 10080)
-#   hold on|off   « ne pas éteindre » jusqu'au plafond, ou annuler
-#   actions       liste des actions disponibles
-#   version       version du script
+#   status          état de la tour et de son extinction automatique (JSON)
+#   health          santé : services, disques (SMART), sécurité (JSON)
+#   shutdown        éteint la tour (dans 3 secondes)
+#   reboot          redémarre la tour (dans 3 secondes)
+#   extend [H]      repousse l'échéance de H heures (défaut : AUTO_OFF_EXTEND_HOURS)
+#   extend-min M    repousse l'échéance de M minutes (1 à 43200)
+#   off-in N        échéance dans N minutes (1 à 10080)
+#   hold on|off     « ne pas éteindre » jusqu'au plafond, ou annuler
+#   restart S       redémarre le service S, s'il est dans TOWER_RESTARTABLE
+#   woke-by-server  signalé par le serveur après un réveil par le réseau :
+#                   l'échéance de ce démarrage devient AUTO_OFF_WAKE_HOURS
+#   actions         liste des actions disponibles
+#   version         version du script
 #
 # Réponse : une ligne JSON. Code de sortie : 0 = ok, 1 = échec, 2 = refusé.
 # Utilisation locale sur la tour : sudo -u homelab tour status
@@ -38,7 +43,12 @@ fi
 hl_load_conf "$CONF" || { printf '{"ok":false,"error":"config","message":"configuration illisible"}\n'; exit 1; }
 ACTION_LOG=${ACTION_LOG:-/var/log/homelab/actions.log}
 
+# Un démarrage ne peut être signalé comme « allumé par le serveur » que dans
+# ses 15 premières minutes.
+WAKE_MARK_MAX_UPTIME=900
+
 # Résumé de l'échéance, partagé par plusieurs réponses.
+# « origin » : server (allumée par le serveur) ou button (à la main).
 # « delayed » : l'extinction a été repoussée parce que la tour est utilisée.
 autooff_json() {
   local now remaining hold delayed
@@ -49,9 +59,9 @@ autooff_json() {
   [ "$AO_HOLD" -gt "$now" ] && hold=true
   delayed=false
   [ "$AO_GRACE" -gt "$AO_PLANNED" ] && delayed=true
-  printf '"deadline":%s,"remaining_s":%d,"hold":%s,"cap":%s,"delayed":%s' \
+  printf '"deadline":%s,"remaining_s":%d,"hold":%s,"cap":%s,"delayed":%s,"origin":"%s"' \
     "$(hl_json_str "$(hl_iso "$AO_EFFECTIVE")")" "$remaining" "$hold" \
-    "$(hl_json_str "$(hl_iso "$AO_CAP")")" "$delayed"
+    "$(hl_json_str "$(hl_iso "$AO_CAP")")" "$delayed" "$AO_ORIGIN"
 }
 
 save_request() { # save_request ÉCHÉANCE MAINTIEN
@@ -71,14 +81,28 @@ cmd_status() {
   sess=$(hl_bool hl_session_active)
   # Tâche à ne pas interrompre (mise à jour, verrou systemd), sinon null.
   if busy=$(hl_busy_reason); then busy=$(hl_json_str "$busy"); else busy=null; fi
-  printf '{"ok":true,"api":%d,"time":%s,"uptime_s":%d,"boot_time":%s,"cpu_pct":%s,"mem_used_pct":%s,"cpu_temp_c":%s,"gpu_temp_c":%s,"disk_used_pct":%s,"session_active":%s,"busy":%s,"auto_off":{%s}}\n' \
+  printf '{"ok":true,"api":%d,"time":%s,"uptime_s":%d,"boot_time":%s,"cpu_pct":%s,"mem_used_pct":%s,"cpu_temp_c":%s,"gpu_temp_c":%s,"disk_used_pct":%s,%s,"session_active":%s,"busy":%s,"auto_off":{%s}}\n' \
     "$HOMELAB_API" "$(hl_json_str "$(hl_now)")" "${up:-0}" "$(hl_json_str "$(hl_iso "$AO_BTIME")")" \
-    "$cpu" "$mem" "$ct" "$gt" "$disk" "$sess" "$busy" "$(autooff_json)"
+    "$cpu" "$mem" "$ct" "$gt" "$disk" "$(hl_wifi_json)" "$sess" "$busy" "$(autooff_json)"
+}
+
+cmd_health() {
+  local priv
+  # Disques et sécurité : lecture en root, par la seule commande autorisée.
+  priv=$(sudo -n "$ROOT_HELPER" health 2>/dev/null) || priv=""
+  [[ $priv == '"disks":'* && $priv != *$'\n'* ]] || priv='"disks":null,"security":null'
+  printf '{"ok":true,"api":%d,"time":%s,%s,%s}\n' \
+    "$HOMELAB_API" "$(hl_json_str "$(hl_now)")" \
+    "$(hl_services_json "${TOWER_SERVICES:-}" "${TOWER_RESTARTABLE:-}")" "$priv"
 }
 
 cmd_power() { # cmd_power shutdown|reboot
   local arg=poweroff
-  [ "$1" = "reboot" ] && arg=reboot
+  if [ "$1" = "reboot" ]; then
+    arg=reboot
+    # Le démarrage suivant comptera comme « allumé par le serveur ».
+    hl_state_write "$HL_AO_REBOOT" "$(hl_boot_id) $(date +%s) 0" || true
+  fi
   if sudo -n "$ROOT_HELPER" "$arg" >/dev/null 2>&1; then
     hl_log_action "$1" scheduled
     printf '{"ok":true,"action":%s,"result":"scheduled","in_s":3}\n' "$(hl_json_str "$1")"
@@ -88,8 +112,8 @@ cmd_power() { # cmd_power shutdown|reboot
   fi
 }
 
-cmd_extend() { # cmd_extend HEURES : repousse l'échéance affichée
-  local h=$1 now base new capped=false
+cmd_extend() { # cmd_extend SECONDES NOM : repousse l'échéance affichée
+  local secs=$1 name=$2 now base new capped=false
   hl_autooff_compute
   now=$(date +%s)
   base=$AO_EFFECTIVE
@@ -99,12 +123,13 @@ cmd_extend() { # cmd_extend HEURES : repousse l'échéance affichée
     [ "$AO_TARGET" -gt 0 ] && base=$AO_TARGET
   fi
   [ "$base" -lt "$now" ] && base=$now
-  new=$((base + h * 3600))
+  new=$((base + secs))
   if [ "$new" -gt "$AO_CAP" ]; then new=$AO_CAP; capped=true; fi
   save_request "$new" "$AO_HOLD"
   hl_autooff_compute
-  hl_log_action "extend $h" ok
-  printf '{"ok":true,"action":"extend","hours":%d,"capped":%s,"auto_off":{%s}}\n' "$h" "$capped" "$(autooff_json)"
+  hl_log_action "$name" ok
+  printf '{"ok":true,"action":"extend","minutes":%d,"capped":%s,"auto_off":{%s}}\n' \
+    $((secs / 60)) "$capped" "$(autooff_json)"
 }
 
 cmd_offin() { # cmd_offin MINUTES : échéance dans N minutes, « ne pas éteindre » annulé
@@ -129,8 +154,22 @@ cmd_hold() { # cmd_hold on|off
   printf '{"ok":true,"action":"hold","value":"%s","auto_off":{%s}}\n' "$1" "$(autooff_json)"
 }
 
+cmd_woke_by_server() {
+  local up
+  up=$(hl_uptime_s)
+  if ! hl_valid_uint "$up" || [ "$up" -gt "$WAKE_MARK_MAX_UPTIME" ]; then
+    hl_log_action woke-by-server too_late
+    hl_fail_json too_late "la tour était déjà allumée : rien n'est changé"
+  fi
+  hl_state_write "$HL_AO_ORIGIN" "$(hl_boot_id) 1 0" \
+    || hl_fail_json internal "impossible d'enregistrer l'origine du démarrage"
+  hl_autooff_compute
+  hl_log_action woke-by-server ok
+  printf '{"ok":true,"action":"woke-by-server","auto_off":{%s}}\n' "$(autooff_json)"
+}
+
 cmd_actions() {
-  printf '{"ok":true,"actions":["status","shutdown","reboot","extend","off-in","hold","actions","version"]}\n'
+  printf '{"ok":true,"actions":["status","health","shutdown","reboot","extend","extend-min","off-in","hold","restart","woke-by-server","actions","version"]}\n'
 }
 
 cmd_version() {
@@ -143,9 +182,15 @@ ACTION=${ARGS[0]:-actions}
 NARGS=${#ARGS[@]}
 
 case "$ACTION" in
-  status)
-    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "status ne prend pas d'argument"
-    cmd_status ;;
+  status|health|woke-by-server|actions|help|version)
+    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "$ACTION ne prend pas d'argument"
+    case "$ACTION" in
+      status)         cmd_status ;;
+      health)         cmd_health ;;
+      woke-by-server) cmd_woke_by_server ;;
+      version)        cmd_version ;;
+      *)              cmd_actions ;;
+    esac ;;
   shutdown|reboot)
     [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "$ACTION ne prend pas d'argument"
     cmd_power "$ACTION" ;;
@@ -153,7 +198,11 @@ case "$ACTION" in
     [ "$NARGS" -le 2 ] || hl_refuse "bad_args" "usage : extend [H]"
     H=${ARGS[1]:-${AUTO_OFF_EXTEND_HOURS:-2}}
     hl_in_range "$H" 1 720 || hl_refuse "bad_args" "H doit être un nombre d'heures entre 1 et 720"
-    cmd_extend "$H" ;;
+    cmd_extend $((H * 3600)) "extend $H" ;;
+  extend-min)
+    [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : extend-min M"
+    hl_in_range "${ARGS[1]}" 1 43200 || hl_refuse "bad_args" "M doit être un nombre de minutes entre 1 et 43200"
+    cmd_extend $((ARGS[1] * 60)) "extend-min ${ARGS[1]}" ;;
   off-in)
     [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : off-in N"
     hl_in_range "${ARGS[1]}" 1 10080 || hl_refuse "bad_args" "N doit être un nombre de minutes entre 1 et 10080"
@@ -164,12 +213,11 @@ case "$ACTION" in
       on|off) cmd_hold "${ARGS[1]}" ;;
       *)      hl_refuse "bad_args" "usage : hold on|off" ;;
     esac ;;
-  actions|help)
-    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "actions ne prend pas d'argument"
-    cmd_actions ;;
-  version)
-    [ "$NARGS" -le 1 ] || hl_refuse "bad_args" "version ne prend pas d'argument"
-    cmd_version ;;
+  restart)
+    [ "$NARGS" -eq 2 ] || hl_refuse "bad_args" "usage : restart SERVICE"
+    hl_restart_allowed "${ARGS[1]}" "${TOWER_RESTARTABLE:-}" \
+      || hl_refuse "not_allowed" "service non autorisé au redémarrage (TOWER_RESTARTABLE)"
+    hl_restart_reply "$ROOT_HELPER" "${ARGS[1]}" ;;
   *)
     hl_refuse "unknown_action" "action inconnue" ;;
 esac

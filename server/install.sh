@@ -5,6 +5,8 @@
 # À lancer en root, depuis une copie du dépôt sur le serveur :
 #   sudo server/install.sh                  installe ou met à jour
 #   sudo server/install.sh add-key "CLÉ"    autorise une clé publique « actions »
+#                                           (relancer install applique aussi les
+#                                           réglages actuels aux clés déjà autorisées)
 #   sudo server/install.sh uninstall        retire scripts, minuteur, règle sudo et réglage SSH
 #
 # Aucune valeur personnelle ici : tout vient de /etc/homelab/homelab.conf.
@@ -83,8 +85,59 @@ install_wake_timer() {
   ok "allumage programmé : $(wake_specs | paste -sd ';' | sed 's/;/ ; /g')"
 }
 
+# Options d'une clé « actions » : commande forcée, rien d'autre, sauf le tunnel
+# vers la webcam si elle est configurée (et seulement vers son port local).
+key_options() {
+  local o="restrict"
+  if hl_in_range "${WEBCAM_PORT:-}" 1 65535; then
+    o+=",port-forwarding,permitopen=\"127.0.0.1:$WEBCAM_PORT\""
+  fi
+  o+=",command=\"$BIN\""
+  [ -z "${ACTIONS_KEY_FROM:-}" ] || o+=",from=\"$ACTIONS_KEY_FROM\""
+  printf '%s' "$o"
+}
+
+KEY_RE='(ssh-ed25519|sk-ssh-ed25519@openssh\.com|ecdsa-sha2-nistp256|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [A-Za-z0-9@._-]{1,64})?'
+
+# Applique les options actuelles à toutes les clés « actions » déjà autorisées.
+# Lecture et écriture avec les droits du compte homelab, jamais en root.
+sync_keys() {
+  local auth="$HL_HOME/.ssh/authorized_keys" line old new="" opts n=0
+  [ -f "$auth" ] && [ ! -L "$auth" ] || return 0
+  opts=$(key_options)
+  old=$(sudo -u "$HL_USER" cat "$auth") || die "lecture impossible : $auth"
+  while IFS= read -r line; do
+    if [[ $line == *"command=\"$BIN\""* && $line =~ $KEY_RE$ ]]; then
+      line="$opts ${BASH_REMATCH[0]}"
+      n=$((n + 1))
+    fi
+    [ -z "$line" ] || new+="$line"$'\n'
+  done <<< "$old"
+  if [ "$new" != "$old"$'\n' ] && [ -n "$new" ]; then
+    printf '%s' "$new" | sudo -u "$HL_USER" sh -c 'umask 077; cat > "$1.new" && mv -f "$1.new" "$1"' sh "$auth" \
+      || die "écriture impossible : $auth"
+  fi
+  [ "$n" -eq 0 ] || ok "réglages appliqués aux $n clé(s) « actions » déjà autorisée(s)"
+}
+
+# Services redémarrables depuis l'application : format, liste interdite, et
+# présence parmi les services suivis (sinon l'application ne les affiche pas).
+check_restartable() { # check_restartable NOM_CLÉ "REDÉMARRABLES" "SUIVIS"
+  local u bad=0
+  for u in $2; do
+    if ! hl_valid_restartable "$u"; then
+      say "  ✗ $1 : « $u » : minuscules, chiffres et tirets seulement, sans « .service »"; bad=1
+    elif hl_restart_denied "$u"; then
+      say "  ✗ $1 : « $u » ne peut pas être redémarré à distance (un échec couperait l'accès à la machine)"; bad=1
+    elif ! hl_in_list "$u" "$3"; then
+      say "  ✗ $1 : « $u » doit aussi figurer dans les services suivis"; bad=1
+    fi
+  done
+  return "$bad"
+}
+
 check_conf() {
-  local bad=0
+  local bad=0 u
   hl_load_conf "$CONF" || die "configuration illisible : $CONF"
   hl_valid_iface "${LINK_INTERFACE:-}" || { say "  ✗ LINK_INTERFACE invalide"; bad=1; }
   hl_valid_mac "${TOWER_MAC:-}"        || { say "  ✗ TOWER_MAC invalide"; bad=1; }
@@ -102,13 +155,23 @@ check_conf() {
     say "  ✗ ACTIONS_KEY_FROM invalide"; bad=1
   fi
   wake_specs >/dev/null || bad=1
+  if [ -n "${WEBCAM_PORT:-}" ] && ! hl_in_range "$WEBCAM_PORT" 1 65535; then
+    say "  ✗ WEBCAM_PORT doit être un port (1 à 65535), ou vide"; bad=1
+  fi
+  for u in ${SERVER_SMART_DEVICES:-}; do
+    hl_valid_disk "$u" || { say "  ✗ SERVER_SMART_DEVICES : « $u » n'est pas un disque (/dev/nvme0n1, /dev/sda, /dev/disk/by-id/…)"; bad=1; }
+  done
+  for u in ${SERVER_SERVICES:-}; do
+    hl_valid_unit "$u" || { say "  ✗ SERVER_SERVICES : « $u » n'est pas un nom de service"; bad=1; }
+  done
+  check_restartable SERVER_RESTARTABLE "${SERVER_RESTARTABLE:-}" "${SERVER_SERVICES:-}" || bad=1
   [ "$bad" -eq 0 ] || die "corrige $CONF (sudoedit $CONF), puis relance."
   [ -e "/sys/class/net/$LINK_INTERFACE" ] || say "  ! l'interface $LINK_INTERFACE n'est pas branchée pour l'instant"
   ok "configuration valide"
 }
 
 do_install() {
-  local missing=() tmp
+  local missing=() tmp u
 
   # 1. Dépendances
   command -v etherwake >/dev/null 2>&1 || missing+=(etherwake)
@@ -116,6 +179,8 @@ do_install() {
   command -v flock >/dev/null 2>&1     || missing+=(util-linux)
   command -v sudo >/dev/null 2>&1      || missing+=(sudo)
   command -v ssh >/dev/null 2>&1       || missing+=(openssh-client)
+  command -v smartctl >/dev/null 2>&1  || missing+=(smartmontools)
+  command -v jq >/dev/null 2>&1        || missing+=(jq)
   if [ "${#missing[@]}" -gt 0 ]; then
     say "→ Installation de : ${missing[*]}"
     apt-get install -y --no-install-recommends "${missing[@]}"
@@ -144,12 +209,14 @@ do_install() {
   fi
   # Aucun mot de passe utilisable (« * ») : connexion par clé uniquement.
   usermod -p '*' "$HL_USER"
-  chmod 750 "$HL_HOME"
-  install -d -o "$HL_USER" -g "$HL_USER" -m 700 "$HL_HOME/.ssh"
+  # Dossiers vérifiés un par un : jamais de lien suivi (voir hl_safe_dir).
+  hl_safe_dir "$HL_HOME" "$HL_USER" 750 || die "dossier $HL_HOME non sûr"
+  hl_safe_dir "$HL_HOME/.ssh" "$HL_USER" 700 || die "dossier $HL_HOME/.ssh non sûr"
+  [ ! -L "$HL_HOME/.ssh/authorized_keys" ] || die "$HL_HOME/.ssh/authorized_keys est un lien : arrêt"
   [ -f "$HL_HOME/.ssh/authorized_keys" ] \
     || install -o "$HL_USER" -g "$HL_USER" -m 600 /dev/null "$HL_HOME/.ssh/authorized_keys"
-  install -d -o "$HL_USER" -g "$HL_USER" -m 750 "$HL_HOME/state"
-  install -d -o "$HL_USER" -g "$HL_USER" -m 750 "$LOGDIR"
+  hl_safe_dir "$HL_HOME/state" "$HL_USER" 750 || die "dossier $HL_HOME/state non sûr"
+  hl_safe_dir "$LOGDIR" "$HL_USER" 750 || die "dossier $LOGDIR non sûr"
 
   # 4. Configuration : lisible par homelab, modifiable par root uniquement
   chown root:"$HL_USER" "$CONF"
@@ -162,20 +229,34 @@ do_install() {
   install -m 755 "$HERE/homelab" "$BIN"
   ok "scripts installés"
 
-  # 6. sudo : uniquement « homelab-root wake », rien d'autre
+  # 6. sudo : uniquement « homelab-root wake », « homelab-root health », et le
+  #    redémarrage de chaque service autorisé
   tmp=$(mktemp)
-  printf '%s ALL=(root) NOPASSWD: %s wake\n' "$HL_USER" "$LIBDIR/homelab-root" > "$tmp"
+  hl_sudoers_line "$HL_USER" "$LIBDIR/homelab-root" "wake health" "${SERVER_RESTARTABLE:-}" > "$tmp"
   if ! visudo -cf "$tmp" >/dev/null; then rm -f "$tmp"; die "règle sudo invalide"; fi
   install -m 440 "$tmp" "$SUDOERS"
   rm -f "$tmp"
   tmp=$(sudo -l -U "$HL_USER" 2>/dev/null || true)
   grep -qF "$LIBDIR/homelab-root wake" <<< "$tmp" \
     || die "sudo ne lit pas $SUDOERS : vérifie la ligne « @includedir /etc/sudoers.d » de /etc/sudoers (sudo visudo)"
-  ok "règle sudo limitée à « homelab-root wake »"
+  for u in ${SERVER_RESTARTABLE:-}; do
+    grep -qF "$LIBDIR/homelab-root restart $u" <<< "$tmp" || die "règle sudo incomplète pour « $u »"
+  done
+  ok "règle sudo limitée à « homelab-root wake » et « homelab-root health »"
+  [ -z "${SERVER_RESTARTABLE:-}" ] || ok "services redémarrables depuis l'application : $SERVER_RESTARTABLE"
 
-  # 7. SSH : le compte homelab ne peut lancer que le script
+  # 7. SSH : le compte homelab ne peut lancer que le script ; avec une webcam,
+  #    il peut aussi ouvrir un tunnel, vers son seul port local.
   install -d -m 755 "$(dirname "$SSHD_DROPIN")"
-  install -m 644 "$HERE/sshd-homelab.conf" "$SSHD_DROPIN"
+  tmp=$(mktemp)
+  if hl_in_range "${WEBCAM_PORT:-}" 1 65535; then
+    sed "s|^    AllowTcpForwarding no\$|    AllowTcpForwarding local\n    PermitOpen 127.0.0.1:$WEBCAM_PORT|" \
+      "$HERE/sshd-homelab.conf" > "$tmp"
+  else
+    cp "$HERE/sshd-homelab.conf" "$tmp"
+  fi
+  install -m 644 "$tmp" "$SSHD_DROPIN"
+  rm -f "$tmp"
   if ! reload_ssh; then
     rm -f "$SSHD_DROPIN"
     reload_ssh || true
@@ -184,7 +265,14 @@ do_install() {
   hl_forcecommand_ok "$BIN" \
     || die "sshd n'applique pas le réglage : vérifie que /etc/ssh/sshd_config contient « Include /etc/ssh/sshd_config.d/*.conf » au début"
   ok "SSH : le compte $HL_USER est limité au script"
+  if hl_in_range "${WEBCAM_PORT:-}" 1 65535; then
+    tmp=$(sshd -T -C user=homelab,host=localhost,addr=127.0.0.1 2>/dev/null | grep -i '^permitopen ' || true)
+    [ "${tmp,,}" = "permitopen 127.0.0.1:$WEBCAM_PORT" ] \
+      || die "sshd n'applique pas la limite du tunnel vers la webcam (PermitOpen)"
+    ok "webcam : tunnel autorisé vers 127.0.0.1:$WEBCAM_PORT seulement"
+  fi
   hl_sshd_filter_warning
+  sync_keys
 
   # 8. Clé du serveur vers la tour, restreinte côté tour au script « tour »
   if [ ! -f "$HL_HOME/.ssh/id_tower" ]; then
@@ -230,20 +318,23 @@ do_add_key() { # do_add_key "CLÉ PUBLIQUE"
   hl_load_conf "$CONF" || die "configuration illisible : $CONF"
   key=$(printf '%s' "$key" | tr -d '\r\n')
   [[ $key =~ $re ]] || die "clé publique invalide (attendu : « ssh-ed25519 AAAA… commentaire »)"
+  if [ -n "${ACTIONS_KEY_FROM:-}" ]; then
+    hl_valid_from "$ACTIONS_KEY_FROM" || die "ACTIONS_KEY_FROM invalide"
+  fi
+  if [ -n "${WEBCAM_PORT:-}" ]; then
+    hl_in_range "$WEBCAM_PORT" 1 65535 || die "WEBCAM_PORT invalide"
+  fi
   tmp=$(mktemp)
   printf '%s\n' "$key" > "$tmp"
   if ! fp=$(ssh-keygen -l -f "$tmp" 2>/dev/null); then rm -f "$tmp"; die "clé publique illisible"; fi
   rm -f "$tmp"
+  [ ! -L "$auth" ] || die "$auth est un lien : arrêt"
   blob=$(printf '%s' "$key" | cut -d' ' -f2)
   if grep -qF -- "$blob" "$auth" 2>/dev/null; then ok "clé déjà autorisée : $fp"; return 0; fi
-  opts="restrict,command=\"$BIN\""
-  if [ -n "${ACTIONS_KEY_FROM:-}" ]; then
-    hl_valid_from "$ACTIONS_KEY_FROM" || die "ACTIONS_KEY_FROM invalide"
-    opts+=",from=\"$ACTIONS_KEY_FROM\""
-  fi
-  printf '%s %s\n' "$opts" "$key" >> "$auth"
-  chown "$HL_USER:$HL_USER" "$auth"
-  chmod 600 "$auth"
+  opts=$(key_options)
+  # Écrit avec les droits du compte homelab, jamais en root dans son dossier.
+  printf '%s %s\n' "$opts" "$key" | sudo -u "$HL_USER" sh -c 'umask 077; cat >> "$1"' sh "$auth" \
+    || die "écriture impossible dans $auth"
   ok "clé autorisée : $fp"
   say "Test depuis le téléphone : ssh -i ~/.ssh/homelab_actions $HL_USER@<serveur> status"
 }

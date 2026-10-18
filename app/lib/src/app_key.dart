@@ -16,18 +16,23 @@ class AppKey {
   /// autoriser sur le serveur avec install.sh add-key.
   final String publicLine;
 
-  static const comment = 'homelab-app';
+  /// Commentaire de la clé « actions » et de celle du terminal.
+  static const actionsComment = 'homelab-app';
+  static const terminalComment = 'homelab-terminal';
 
   /// Nouvelle clé, à partir de 32 octets du générateur aléatoire
   /// cryptographique du système.
-  factory AppKey.generate() {
+  factory AppKey.generate({String comment = actionsComment}) {
     final rnd = Random.secure();
     final seed = Uint8List.fromList(List<int>.generate(32, (_) => rnd.nextInt(256)));
-    return AppKey.fromSeed(seed, checkInt: rnd.nextInt(1 << 32));
+    return AppKey.fromSeed(seed, checkInt: rnd.nextInt(1 << 32), comment: comment);
   }
 
   /// Clé construite à partir d'une graine de 32 octets (sert aussi aux tests).
-  factory AppKey.fromSeed(Uint8List seed, {int checkInt = 0}) {
+  factory AppKey.fromSeed(Uint8List seed, {int checkInt = 0, String comment = actionsComment}) {
+    if (!RegExp(r'^[A-Za-z0-9@._-]{1,64}$').hasMatch(comment)) {
+      throw ArgumentError.value(comment, 'comment', 'commentaire de clé invalide');
+    }
     if (seed.length != 32) {
       throw ArgumentError.value(seed.length, 'seed', 'graine de 32 octets attendue');
     }
@@ -35,7 +40,7 @@ class AppKey {
     final pub = Uint8List.fromList(signing.verifyKey);
     final blob = _publicBlob(pub);
     return AppKey._(
-      _openSshPem(blob, seed, pub, checkInt),
+      _openSshPem(blob, seed, pub, checkInt, comment),
       'ssh-ed25519 ${base64.encode(blob)} $comment',
     );
   }
@@ -50,7 +55,7 @@ class AppKey {
 
   // Format « openssh-key-v1 », sans chiffrement (le stockage d'Android chiffre
   // déjà) : même résultat que ssh-keygen -t ed25519 -N "".
-  static String _openSshPem(Uint8List blob, Uint8List seed, Uint8List pub, int checkInt) {
+  static String _openSshPem(Uint8List blob, Uint8List seed, Uint8List pub, int checkInt, String comment) {
     final priv = BytesBuilder()
       ..add(_u32(checkInt))
       ..add(_u32(checkInt));

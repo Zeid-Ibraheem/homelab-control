@@ -1,20 +1,33 @@
-// Tableau de bord : état du serveur et de la tour, et les boutons d'action.
+// Tableau de bord : état du serveur et de la tour, boutons d'action, et accès
+// à la santé, à la webcam et aux terminaux.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'duration_sheet.dart';
 import 'format.dart';
+import 'health_screen.dart';
 import 'journal_screen.dart';
 import 'settings_screen.dart';
 import 'ssh_link.dart';
 import 'store.dart';
+import 'terminal_screen.dart';
+import 'webcam_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key, required this.data, required this.onReset});
+  const DashboardScreen({
+    super.key,
+    required this.data,
+    required this.onReset,
+    required this.onStoreChanged,
+  });
 
   final AppData data;
   final Future<void> Function({required bool all}) onReset;
+
+  /// Appelé quand des réglages ont été enregistrés : les relire.
+  final VoidCallback onStoreChanged;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -146,35 +159,50 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     await _act(Cmd.towerReboot, (_) => 'La tour redémarre dans 3 secondes.');
   }
 
+  /// Prolonger : durée au choix, jusqu'au plafond.
   Future<void> _extend() async {
-    final hours = await _choose('Repousser l\'extinction de…', const {
-      1: '1 heure',
-      2: '2 heures',
-      4: '4 heures',
-      8: '8 heures',
-    });
-    if (hours == null || !mounted) return;
-    await _act(Cmd.extend(hours), (r) {
-      final a = AutoOff.fromRelayed(r);
+    final a = _status?.tower.detail?.autoOff;
+    if (a == null) return;
+    final now = DateTime.now();
+    final deadline = a.deadline;
+    final from = deadline != null && deadline.isAfter(now) ? deadline : now;
+    final minutes = await chooseDuration(
+      context,
+      title: "Repousser l'extinction de…",
+      maxMinutes: a.minutesToCap(now),
+      preview: (m) => 'Extinction : ${when(from.add(Duration(minutes: m)), now)}',
+      emptyMessage: a.hold
+          ? '« Ne pas éteindre » est actif : la tour reste allumée jusqu\'au plafond.'
+          : 'Plafond atteint : impossible de repousser davantage.',
+    );
+    if (minutes == null || !mounted) return;
+    await _act(Cmd.extendMinutes(minutes), (r) {
+      final after = AutoOff.fromRelayed(r);
       final capped = r.tower?['capped'] == true;
-      final at = a?.deadline == null ? '' : ' : ${when(a!.deadline!, DateTime.now())}';
+      final at = after?.deadline == null ? '' : ' : ${when(after!.deadline!, DateTime.now())}';
       return 'Extinction repoussée$at${capped ? ' (plafond atteint)' : ''}.';
     });
   }
 
+  /// Éteindre dans… : durée au choix, jusqu'au plafond.
   Future<void> _offIn() async {
-    final minutes = await _choose('Éteindre la tour dans…', const {
-      15: '15 minutes',
-      30: '30 minutes',
-      60: '1 heure',
-      120: '2 heures',
-    });
+    final a = _status?.tower.detail?.autoOff;
+    if (a == null) return;
+    final now = DateTime.now();
+    final minutes = await chooseDuration(
+      context,
+      title: 'Éteindre la tour dans…',
+      maxMinutes: a.minutesFromNowToCap(now),
+      preview: (m) => 'Extinction : ${when(now.add(Duration(minutes: m)), now)}',
+      emptyMessage: 'Plafond atteint : utilise « Éteindre ».',
+      quick: const [5, 15, 30, 60],
+    );
     if (minutes == null || !mounted) return;
     await _act(Cmd.offIn(minutes), (r) {
-      final a = AutoOff.fromRelayed(r);
-      return a?.deadline == null
+      final after = AutoOff.fromRelayed(r);
+      return after?.deadline == null
           ? 'Extinction programmée.'
-          : "La tour s'éteindra à ${clock(a!.deadline!)}.";
+          : "La tour s'éteindra à ${clock(after!.deadline!)}.";
     });
   }
 
@@ -197,30 +225,21 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     return yes ?? false;
   }
 
-  Future<int?> _choose(String title, Map<int, String> options) {
-    return showModalBottomSheet<int>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-              child: Text(title, style: Theme.of(ctx).textTheme.titleMedium),
-            ),
-            for (final o in options.entries)
-              ListTile(title: Text(o.value), onTap: () => Navigator.pop(ctx, o.key)),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _open(Widget screen) {
     unawaited(Navigator.push(context, MaterialPageRoute<void>(builder: (_) => screen)));
   }
+
+  void _openSettings() => _open(SettingsScreen(
+        data: widget.data,
+        onReset: widget.onReset,
+        onStoreChanged: widget.onStoreChanged,
+      ));
+
+  void _openTerminal(bool toTower) => _open(TerminalScreen(
+        data: widget.data,
+        toTower: toTower,
+        onStoreChanged: widget.onStoreChanged,
+      ));
 
   @override
   Widget build(BuildContext context) {
@@ -230,6 +249,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         title: const Text('Homelab'),
         actions: [
           IconButton(
+            tooltip: 'Santé',
+            icon: const Icon(Icons.monitor_heart_outlined),
+            onPressed: () => _open(HealthScreen(link: _link)),
+          ),
+          IconButton(
             tooltip: 'Journal',
             icon: const Icon(Icons.history),
             onPressed: () => _open(JournalScreen(link: _link)),
@@ -237,7 +261,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
           IconButton(
             tooltip: 'Réglages',
             icon: const Icon(Icons.settings_outlined),
-            onPressed: () => _open(SettingsScreen(data: widget.data, onReset: widget.onReset)),
+            onPressed: _openSettings,
           ),
         ],
         bottom: _loading || _acting
@@ -262,9 +286,11 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
             if (s != null) ...[
               _serverCard(s.server),
               const SizedBox(height: 12),
-              _towerCard(s.tower),
+              _towerCard(s),
               const SizedBox(height: 12),
               _actions(s.tower),
+              const SizedBox(height: 12),
+              _access(s),
               if (_updated != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
@@ -300,14 +326,22 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         if (v.uptimeS != null) 'Allumé depuis ${duration(v.uptimeS!)}',
         'Processeur ${pct(v.cpuPct)} · Mémoire ${pct(v.memPct)} · ${temp(v.tempC)}',
         'Disque ${pct(v.diskPct)}${v.batteryPct == null ? '' : ' · Batterie ${v.batteryPct} %$power'}',
+        if (v.wifi != null) 'Wi-Fi : ${wifiText(v.wifi!.signalDbm)}',
         'Câble vers la tour : $cable',
       ],
     );
   }
 
-  Widget _towerCard(TowerState t) {
+  Widget _towerCard(Status s) {
+    final t = s.tower;
+    final now = DateTime.now();
+    final next = s.nextWake;
+    final schedule = [
+      if (next != null) 'Prochain allumage programmé : ${when(next, now)}',
+      if (s.wakeSpecs.isNotEmpty) 'Programmé : ${s.wakeSpecs.map(describeSchedule).join(' ; ')}',
+    ];
     if (!t.online) {
-      return const _Section(title: 'Tour', state: 'éteinte', on: false);
+      return _Section(title: 'Tour', state: 'éteinte', on: false, lines: schedule);
     }
     final via = switch (t.via) {
       'link' => 'par le câble',
@@ -320,23 +354,26 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
         title: 'Tour',
         state: 'allumée $via',
         on: true,
-        lines: const ['Elle démarre, ou ne répond pas encore.'],
+        lines: ['Elle démarre, ou ne répond pas encore.', ...schedule],
       );
     }
     final a = d.autoOff;
-    final now = DateTime.now();
     return _Section(
       title: 'Tour',
       state: 'allumée $via',
       on: true,
       lines: [
-        if (d.uptimeS != null) 'Allumée depuis ${duration(d.uptimeS!)}',
+        if (d.uptimeS != null)
+          'Allumée depuis ${duration(d.uptimeS!)}'
+              '${a == null ? '' : a.byServer ? ', par le serveur' : ', à la main'}',
         'Processeur ${pct(d.cpuPct)} · ${temp(d.cpuTempC)} · Carte graphique ${temp(d.gpuTempC)}',
         'Mémoire ${pct(d.memPct)} · Disque ${pct(d.diskPct)}',
+        if (d.wifi != null) 'Wi-Fi : ${wifiText(d.wifi!.signalDbm)}',
         if (a != null)
           'Extinction automatique dans ${duration(a.remainingS)}'
               '${a.deadline == null ? '' : ' (${when(a.deadline!, now)})'}',
         if (a != null && a.cap != null) 'Plafond : ${when(a.cap!, now)}',
+        ...schedule,
       ],
       chips: [
         if (a != null && a.hold) 'Ne pas éteindre',
@@ -358,7 +395,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
     }
     final scheme = Theme.of(context).colorScheme;
     final hold = t.detail?.autoOff?.hold ?? false;
-    final canPilot = t.detail != null;
+    final canPilot = t.detail?.autoOff != null;
     return Card(
       color: scheme.surfaceContainerHigh,
       child: Padding(
@@ -371,7 +408,7 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 Expanded(
                   child: FilledButton.tonal(
                     onPressed: off || !canPilot ? null : _extend,
-                    child: const Text('Prolonger'),
+                    child: const Text('Prolonger…'),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -411,6 +448,44 @@ class _DashboardScreenState extends State<DashboardScreen> with WidgetsBindingOb
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Accès : webcam et terminaux.
+  Widget _access(Status s) {
+    final data = widget.data;
+    final port = s.webcamPort;
+    return Card(
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: port == null ? null : () => _open(WebcamScreen(link: _link, port: port)),
+              icon: const Icon(Icons.videocam_outlined),
+              label: Text(port == null ? 'Webcam (non configurée)' : 'Webcam'),
+            ),
+            OutlinedButton.icon(
+              onPressed: data.serverTerminalReady ? () => _openTerminal(false) : _openSettings,
+              icon: const Icon(Icons.terminal),
+              label: const Text('Terminal serveur'),
+            ),
+            OutlinedButton.icon(
+              onPressed: data.towerTerminalReady && s.tower.online ? () => _openTerminal(true) : null,
+              icon: const Icon(Icons.terminal),
+              label: const Text('Terminal tour'),
+            ),
+            if (!data.serverTerminalReady)
+              Text(
+                'Terminaux : à configurer dans les réglages.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
           ],
         ),
       ),

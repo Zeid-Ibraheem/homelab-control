@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -31,6 +32,11 @@ void main() {
   });
 
   test('empreintes au format de ssh-keygen', () {
+    // Forme donnée par dartssh2 : le texte « SHA256:… » lui-même.
+    final text = 'SHA256:${'A' * 43}';
+    expect(fingerprintText(utf8.encode(text)), text);
+    expect(fingerprintText(bytesOfHex(hexOf(utf8.encode(text)))), text); // valeur enregistrée relue
+    // Octets bruts.
     final md5 = Uint8List(16);
     expect(fingerprintText(md5), 'MD5:${List.filled(16, '00').join(':')}');
     final sha = Uint8List(32);
@@ -46,5 +52,35 @@ void main() {
   test('majuscule initiale', () {
     expect(capitalize('la tour'), 'La tour');
     expect(capitalize(''), '');
+  });
+  test('allumages programmés en clair', () {
+    expect(describeSchedule('Mon..Fri *-*-* 07:45:00'), 'du lundi au vendredi à 07:45');
+    expect(describeSchedule('Sat *-*-* 10:00:00'), 'le samedi à 10:00');
+    expect(describeSchedule('*-*-* 6:30'), 'tous les jours à 06:30');
+    expect(describeSchedule('Mon,Wed,Fri *-*-* 08:00:00'), 'lundi, mercredi et vendredi à 08:00');
+    expect(describeSchedule('Sat..Sun *-*-* 11:00'), 'du samedi au dimanche à 11:00');
+    expect(describeSchedule('weekly'), 'weekly');
+    expect(describeSchedule('Mon *-*-* 07:45:30'), 'Mon *-*-* 07:45:30');
+  });
+
+  test('signal Wi-Fi en clair', () {
+    expect(wifiText(-48), '-48 dBm (excellent)');
+    expect(wifiText(-55), '-55 dBm (excellent)');
+    expect(wifiText(-60), '-60 dBm (bon)');
+    expect(wifiText(-70), '-70 dBm (moyen)');
+    expect(wifiText(-80), '-80 dBm (faible)');
+    expect(wifiText(-90), '-90 dBm (très faible)');
+  });
+
+  test('états des services', () {
+    expect(serviceStateText('active'), 'actif');
+    expect(serviceStateText('failed'), 'en échec');
+    expect(serviceStateText('maintenance'), 'maintenance');
+  });
+
+  test('temps de fonctionnement des disques', () {
+    expect(powerOnText(36), '36 h');
+    expect(powerOnText(1234), '51 j');
+    expect(powerOnText(20000), '2,3 ans');
   });
 }

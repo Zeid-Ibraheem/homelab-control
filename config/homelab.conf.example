@@ -33,6 +33,11 @@ ACTIONS_KEY_FROM="100.64.0.0/10"   # adresses d'où la clé « actions » est ac
                                    # en IPv4) ; vide = toutes les adresses
 WAKE_COOLDOWN_S=20                 # délai minimal entre deux réveils, en secondes
 
+# ── Webcam (utilisé sur le serveur) ────────────────────────────────────────
+WEBCAM_PORT=""                     # port du serveur vidéo, qui n'écoute que sur
+                                   # 127.0.0.1 (ex. ustreamer : 8080) ; l'appli y
+                                   # accède par un tunnel SSH. Vide = pas de webcam
+
 # ── Allumage programmé de la tour (utilisé sur le serveur) ─────────────────
 WAKE_SCHEDULE=""                   # vide = aucun. Format systemd (OnCalendar),
                                    # plusieurs dates séparées par « ; ». Exemple :
@@ -46,19 +51,32 @@ TOWER_KEY_FROM="192.0.2.1,100.64.0.0/10"   # adresses d'où la clé du serveur e
                                    # serveur s'y connecte toujours en IPv4) ; vide = toutes
 
 # ── Extinction automatique de la tour (utilisé sur la tour) ────────────────
-AUTO_OFF_DEFAULT_HOURS=8           # durée accordée à chaque démarrage
-AUTO_OFF_EXTEND_HOURS=2            # durée ajoutée par « prolonger »
-AUTO_OFF_MAX_HOURS=48              # plafond après le démarrage, même avec
+AUTO_OFF_DEFAULT_HOURS=8           # durée après un allumage à la main (bouton)
+AUTO_OFF_WAKE_HOURS=4              # durée après un allumage par le serveur
+                                   # (réveil par le réseau, redémarrage à distance)
+AUTO_OFF_EXTEND_HOURS=2            # durée ajoutée par « prolonger » sans nombre
+AUTO_OFF_MAX_HOURS=8               # plafond après le démarrage, même avec
                                    # « prolonger » ou « ne pas éteindre »
 AUTO_OFF_SESSION_GRACE_MIN=30      # session locale déverrouillée à l'échéance :
                                    # extinction seulement ce délai après la
                                    # dernière minute où elle était utilisée
 
-# ── Surveillance (phase 4, pas encore utilisé) ─────────────────────────────
+# ── Santé : services suivis et disques (SMART) ─────────────────────────────
 SERVER_SERVICES="ssh tailscaled NetworkManager"   # services suivis sur le serveur
 TOWER_SERVICES="sshd tailscaled NetworkManager"   # services suivis sur la tour
-SERVER_SMART_DEVICES="/dev/nvme0n1"               # disques dont on lit la santé
-TOWER_SMART_DEVICES="/dev/nvme0n1 /dev/sda"
+SERVER_SMART_DEVICES="/dev/nvme0n1"               # disques dont on lit la santé ;
+TOWER_SMART_DEVICES="/dev/nvme0n1 /dev/sda"       # /dev/disk/by-id/… garde le même
+                                                  # nom d'un démarrage à l'autre
+
+# ── Services redémarrables depuis l'application ────────────────────────────
+SERVER_RESTARTABLE=""              # services du serveur que l'application peut
+                                   # redémarrer, pris parmi SERVER_SERVICES : noms
+                                   # en minuscules, sans « .service ». Vide = aucun.
+                                   # Exemple : "cups docker"
+TOWER_RESTARTABLE=""               # idem pour la tour, parmi TOWER_SERVICES.
+                                   # Refusés, car un échec couperait l'accès à la
+                                   # machine : ssh, sshd, tailscaled, dbus, polkit,
+                                   # networking, iwd, systemd-*
 
 # ── Journal des actions (serveur et tour) ──────────────────────────────────
 ACTION_LOG="/var/log/homelab/actions.log"

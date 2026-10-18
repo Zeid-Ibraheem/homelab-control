@@ -10,17 +10,31 @@ abstract final class AppLock {
   static Future<String?> unlock() async {
     try {
       if (!await _auth.isDeviceSupported()) {
-        return "Configure d'abord un verrouillage d'écran (code ou empreinte) sur le téléphone.";
+        return _noLock;
       }
       final ok = await _auth.authenticate(
         localizedReason: 'Déverrouiller Homelab',
-        options: const AuthenticationOptions(stickyAuth: true),
+        persistAcrossBackgrounding: true,
       );
       return ok ? null : 'Déverrouillage annulé.';
+    } on LocalAuthException catch (e) {
+      return switch (e.code) {
+        LocalAuthExceptionCode.userCanceled ||
+        LocalAuthExceptionCode.systemCanceled ||
+        LocalAuthExceptionCode.timeout =>
+          'Déverrouillage annulé.',
+        LocalAuthExceptionCode.noCredentialsSet => _noLock,
+        LocalAuthExceptionCode.temporaryLockout ||
+        LocalAuthExceptionCode.biometricLockout =>
+          "Trop d'essais : attends un peu, ou déverrouille d'abord le téléphone avec son code.",
+        _ => 'Déverrouillage impossible : ${e.description ?? e.code.name}',
+      };
     } on PlatformException catch (e) {
       return 'Déverrouillage impossible : ${e.message ?? e.code}';
     }
   }
+
+  static const _noLock = "Configure d'abord un verrouillage d'écran (code ou empreinte) sur le téléphone.";
 }
 
 /// Écran affiché tant que l'application est verrouillée : rien d'autre n'est

@@ -37,6 +37,17 @@ void main() {
     expect(AppKey.generate().publicLine, isNot(AppKey.generate().publicLine));
   });
 
+  test('clé du terminal : commentaire distinct', () {
+    final key = AppKey.fromSeed(rfcSeed, comment: AppKey.terminalComment);
+    expect(key.publicLine, endsWith(' homelab-terminal'));
+    expect(key.publicLine.split(' ')[1], rfcLine.split(' ')[1]);
+    expect(SSHKeyPair.fromPem(key.privatePem), hasLength(1));
+  });
+
+  test('commentaire invalide refusé', () {
+    expect(() => AppKey.fromSeed(rfcSeed, comment: 'a b'), throwsArgumentError);
+  });
+
   test('graine de mauvaise taille refusée', () {
     expect(() => AppKey.fromSeed(Uint8List(16)), throwsArgumentError);
   });

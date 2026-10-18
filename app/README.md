@@ -1,13 +1,17 @@
 # app/
 
-Application **Android** (Flutter) : la télécommande du homelab (phase 3).
+Application **Android** (Flutter) : la télécommande du homelab (phases 3 à 6).
 
 Elle ne parle qu'au serveur, en SSH, avec sa propre clé ; le serveur relaie vers la tour. Tout ce qu'elle fait marche aussi depuis un terminal (`ssh hl …`, voir [`server/README.md`](../server/README.md)).
 
 ## Ce qu'elle fait
 
-- **Tableau de bord** : état du serveur (temps depuis l'allumage, processeur, mémoire, température, disque, batterie, câble vers la tour) et de la tour (allumée ou non, par le câble ou par le VPN, températures, échéance de l'extinction automatique, « ne pas éteindre », session ouverte devant la tour, tâche en cours).
-- **Boutons** : allumer, prolonger (1, 2, 4 ou 8 h), éteindre dans… (15 min à 2 h), ne pas éteindre, redémarrer, éteindre. Redémarrer et éteindre demandent une confirmation.
+- **Tableau de bord** : état du serveur (temps depuis l'allumage, processeur, mémoire, température, disque, batterie, signal Wi-Fi, câble vers la tour) et de la tour (allumée ou non, par le câble ou par le VPN, températures, signal Wi-Fi, échéance de l'extinction automatique, « ne pas éteindre », session ouverte devant la tour, tâche en cours).
+- **Boutons** : allumer, prolonger (durée au choix, par pas de 5 minutes, jusqu'au plafond), éteindre dans… (durée au choix), ne pas éteindre, redémarrer, éteindre. Redémarrer et éteindre demandent une confirmation.
+- **Comment la tour a été allumée** (par le serveur : 4 h ; à la main : 8 h) et **prochain allumage programmé**.
+- **Santé** : services suivis, disques (SMART : verdict, température, usure, secteurs abîmés), sécurité sur 24 h (connexions SSH, tentatives refusées, blocages du pare-feu), pour le serveur et la tour. Bouton **Redémarrer** à côté des services autorisés dans la configuration de chaque machine (`SERVER_RESTARTABLE`, `TOWER_RESTARTABLE`), avec confirmation.
+- **Webcam** : flux vidéo du serveur, à travers un tunnel SSH vers son seul port local.
+- **Terminal** vers le serveur, et vers la tour en passant par le serveur, avec une clé séparée.
 - **Journal** des actions du serveur (réveils, extinctions, commandes refusées…).
 - L'état est relu toutes les 30 s quand l'application est ouverte, et toutes les 5 s pendant 2 min après un allumage. Rien ne tourne en arrière-plan.
 
@@ -16,12 +20,14 @@ Elle ne parle qu'au serveur, en SSH, avec sa propre clé ; le serveur relaie ver
 | Mesure | Détail |
 |---|---|
 | Clé propre à l'application | Clé SSH Ed25519 créée **sur le téléphone**, à partir du générateur aléatoire cryptographique du système. La partie privée ne le quitte jamais : seule la partie publique est affichée, et les sauvegardes Android de l'application sont désactivées |
-| Stockage chiffré | La clé et les réglages sont chiffrés par une clé gardée dans le Keystore d'Android, protégé par le matériel du téléphone : elle ne peut pas en être extraite |
+| Stockage chiffré | La clé et les réglages sont chiffrés en AES-GCM, par une clé elle-même protégée par le Keystore d'Android, gardé par le matériel du téléphone : elle ne peut pas en être extraite |
+| Bibliothèque SSH à jour | dartssh2 4 : échange de clés strict (protection contre l'attaque Terrapin), refus d'une clé de machine qui change en cours de connexion, vérification des valeurs reçues pendant l'échange de clés |
 | Verrou | Empreinte ou code du téléphone au démarrage, puis après 1 minute en arrière-plan. Tant que l'application est verrouillée, rien n'est chargé en mémoire |
 | Serveur vérifié | À la première connexion, tu compares l'empreinte de la clé du serveur avec celle qu'affiche `ssh-keygen` sur le serveur. Ensuite, toute connexion qui présente une autre clé est refusée : personne ne peut se faire passer pour le serveur |
-| Droits limités | Côté serveur, c'est une clé « actions » comme les autres : compte `homelab`, commande forcée, liste fermée d'actions, acceptée seulement depuis le VPN. L'application ne fabrique d'ailleurs que ces commandes |
+| Droits limités | Côté serveur, c'est une clé « actions » comme les autres : compte `homelab`, commande forcée, liste fermée d'actions, acceptée seulement depuis le VPN, et un seul tunnel possible, vers le port local de la webcam. L'application ne fabrique d'ailleurs que ces commandes |
+| Terminal | Clé séparée (`homelab-terminal`), avec un accès complet à ton compte : l'empreinte ou le code est redemandé à chaque ouverture. La clé de la tour est vérifiée à la première connexion, comme celle du serveur |
 | Réseau | Aucune autre connexion : ni service tiers, ni statistiques, ni services Google |
-| Révocation | Retirer la ligne qui finit par `homelab-app` de `/var/lib/homelab/.ssh/authorized_keys` sur le serveur |
+| Révocation | Retirer la ligne qui finit par `homelab-app` de `/var/lib/homelab/.ssh/authorized_keys` sur le serveur, et celle qui finit par `homelab-terminal` des `~/.ssh/authorized_keys` de ton compte |
 
 ## Construire l'application
 
@@ -45,7 +51,7 @@ flutter doctor --android-licenses           # accepter les licences
 flutter doctor                              # la ligne « Android toolchain » doit être cochée
 ```
 
-Construire :
+Il faut Flutter 3.38 ou plus récent (`flutter --version`). Construire :
 
 ```bash
 cd app
@@ -67,6 +73,8 @@ L'APK se trouve dans `build/app/outputs/flutter-apk/app-release.apk`. Les fichie
 
 Pour une mise à jour : `git pull`, `flutter build apk --release`, puis la même commande `adb install -r` : la clé et les réglages sont conservés.
 
+**Depuis la version 0.6** (stockage chiffré changé de méthode) : les réglages enregistrés par la 0.6 ne sont pas relus. Refaire la première utilisation (nouvelle clé), puis retirer l'ancienne ligne `homelab-app` de `/var/lib/homelab/.ssh/authorized_keys` sur le serveur.
+
 ## Première utilisation
 
 1. Ouvrir l'application et la déverrouiller (empreinte ou code du téléphone).
@@ -77,6 +85,25 @@ Pour une mise à jour : `git pull`, `flutter build apk --release`, puis la même
 
 Le VPN doit être actif dans le même profil Android que l'application.
 
+## Terminal
+
+Dans les réglages, **Créer la clé du terminal**, puis ajouter la ligne affichée à `~/.ssh/authorized_keys` de ton compte, sur le serveur **et** sur la tour. Mieux : la limiter aux adresses d'où elle arrive, en commençant la ligne par `from="…"` :
+
+```text
+# sur le serveur : le téléphone arrive par le VPN
+from="100.64.0.0/10" ssh-ed25519 AAAA… homelab-terminal
+# sur la tour : la connexion part du serveur (adresse sur le câble, ou VPN)
+from="ADRESSE_DU_SERVEUR_SUR_LE_CÂBLE,100.64.0.0/10" ssh-ed25519 AAAA… homelab-terminal
+```
+
+Toujours dans les réglages, renseigner ton compte sur le serveur, ton compte sur la tour, et l'adresse de la tour **vue depuis le serveur** (son adresse sur le câble, ou son nom sur le VPN). La connexion à la tour passe par le serveur : le compte du serveur doit pouvoir ouvrir un tunnel vers le port 22 de la tour (c'est le cas par défaut avec OpenSSH).
+
+Une barre de touches ajoute ce qui manque au clavier du téléphone : Échap, Tab, Ctrl (enclenché, puis la lettre : Ctrl+C, Ctrl+D…), flèches.
+
+## Webcam
+
+Côté serveur, renseigner `WEBCAM_PORT` dans `/etc/homelab/homelab.conf` puis relancer `server/install.sh` (voir [`server/README.md`](../server/README.md#webcam)). Le bouton **Webcam** du tableau de bord s'active alors ; l'application lit le flux MJPEG à l'adresse `/stream` (celle d'ustreamer).
+
 ## En cas de problème
 
 | Message | Cause probable |
@@ -85,6 +112,9 @@ Le VPN doit être actif dans le même profil Android que l'application.
 | Clé refusée par le serveur | Commande `add-key` pas encore lancée sur le serveur, ou `ACTIONS_KEY_FROM` sans la plage IPv4 du VPN |
 | La clé du serveur a changé | Si le serveur a été réinstallé : Réglages, puis « Changer de serveur ». Sinon, **ne pas continuer** : quelqu'un essaie peut-être de se faire passer pour lui |
 | Déverrouillage impossible | Aucun verrouillage d'écran configuré sur le téléphone |
+| Tunnel vers la webcam refusé | `WEBCAM_PORT` vide sur le serveur, ou `install.sh` pas relancé après l'avoir renseigné |
+| Service non autorisé au redémarrage | Le service n'est pas dans `SERVER_RESTARTABLE` (ou `TOWER_RESTARTABLE` sur la tour), ou `install.sh` pas relancé après l'avoir ajouté |
+| Le serveur ne joint pas la tour (terminal) | Tour éteinte, ou adresse de la tour (vue du serveur) incorrecte dans les réglages |
 | Erreur à la compilation | Envoyer la sortie de `flutter analyze` et de `flutter build apk` |
 
 ## Organisation du code
@@ -93,9 +123,12 @@ Le VPN doit être actif dans le même profil Android que l'application.
 |---|---|
 | `lib/main.dart` | Démarrage, verrou, choix entre configuration et tableau de bord |
 | `lib/src/app_key.dart` | Création de la clé Ed25519 au format OpenSSH |
-| `lib/src/ssh_link.dart` | Connexion SSH, vérification de la clé du serveur |
+| `lib/src/ssh_link.dart` | Connexions SSH, vérification des clés des machines, tunnel |
+| `lib/src/remote_shell.dart` | Session du terminal, vers le serveur ou vers la tour par le serveur |
+| `lib/src/mjpeg.dart` | Découpage du flux vidéo MJPEG en images |
+| `lib/src/duration_sheet.dart` | Choix d'une durée au curseur |
 | `lib/src/api.dart` | Commandes envoyées et lecture des réponses JSON |
 | `lib/src/store.dart` | Stockage chiffré |
 | `lib/src/lock.dart` | Verrou (empreinte ou code) |
-| `lib/src/*_screen.dart` | Écrans : configuration, tableau de bord, journal, réglages |
-| `test/` | Tests : format de la clé (vecteur de la RFC 8032), lecture des réponses, mise en forme |
+| `lib/src/*_screen.dart` | Écrans : configuration, tableau de bord, santé, webcam, terminal, journal, réglages |
+| `test/` | Tests : format de la clé (vecteur de la RFC 8032), lecture des réponses, flux vidéo, mise en forme |
