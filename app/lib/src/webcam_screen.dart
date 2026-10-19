@@ -1,15 +1,14 @@
 // Webcam : flux vidéo du serveur, par un tunnel SSH vers son port local
-// (aucun port vidéo n'est exposé sur le réseau).
+// (aucun port vidéo n'est exposé sur le réseau). La réception se fait dans un
+// fil séparé (voir webcam_feed.dart) ; cet écran ne fait qu'afficher.
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-import 'format.dart';
-import 'mjpeg.dart';
 import 'ssh_link.dart';
+import 'webcam_feed.dart';
 
 class WebcamScreen extends StatefulWidget {
   const WebcamScreen({super.key, required this.link, required this.port});
@@ -24,21 +23,32 @@ class WebcamScreen extends StatefulWidget {
 }
 
 class _WebcamScreenState extends State<WebcamScreen> {
-  SshTunnel? _tunnel;
+  WebcamFeed? _feed;
   StreamSubscription<Uint8List>? _sub;
   ui.Image? _image;
-  Uint8List? _pending; // image arrivée pendant le décodage de la précédente
-  bool _decoding = false;
   String? _error;
+
+  // Images affichées pendant la dernière seconde complète.
+  int _fps = 0;
+  int _count = 0;
+  Timer? _fpsTimer;
 
   @override
   void initState() {
     super.initState();
+    _fpsTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {
+        _fps = _count;
+        _count = 0;
+      });
+    });
     unawaited(_start());
   }
 
   @override
   void dispose() {
+    _fpsTimer?.cancel();
     _stop();
     _image?.dispose();
     super.dispose();
@@ -48,65 +58,40 @@ class _WebcamScreenState extends State<WebcamScreen> {
     _stop();
     setState(() => _error = null);
     try {
-      final tunnel = await widget.link.openTunnel(widget.port);
+      final feed = await WebcamFeed.start(widget.link, widget.port);
       if (!mounted) {
-        tunnel.close();
+        feed.close();
         return;
       }
-      _tunnel = tunnel;
-      final decoder = MjpegDecoder();
-      // HTTP/1.0 : réponse envoyée telle quelle, sans découpage en blocs.
-      tunnel.send(ascii.encode('GET /stream HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n'));
-      _sub = tunnel.stream.listen(
-        (chunk) {
-          try {
-            for (final frame in decoder.add(chunk)) {
-              _show(frame);
-            }
-          } on FormatException catch (e) {
-            _fail(capitalize(e.message));
-          }
-        },
+      _feed = feed;
+      _sub = feed.frames.listen(
+        (jpeg) => unawaited(_show(feed, jpeg)),
         onError: (Object e) => _fail(errorText(e)),
-        onDone: () => _fail('Le flux vidéo s\'est arrêté.'),
       );
     } catch (e) {
       _fail(errorText(e));
     }
   }
 
-  // Une seule image décodée à la fois ; les plus anciennes sont sautées si le
-  // téléphone ne suit pas.
-  void _show(Uint8List jpeg) {
-    if (_decoding) {
-      _pending = jpeg;
-      return;
-    }
-    _decoding = true;
-    unawaited(_decode(jpeg));
-  }
-
-  Future<void> _decode(Uint8List jpeg) async {
+  // Décode et affiche une image, puis demande la suivante.
+  Future<void> _show(WebcamFeed feed, Uint8List jpeg) async {
     try {
       final codec = await ui.instantiateImageCodec(jpeg);
       final frame = await codec.getNextFrame();
       codec.dispose();
-      if (!mounted) {
+      if (!mounted || !identical(feed, _feed)) {
         frame.image.dispose();
         return;
       }
+      _count++;
       setState(() {
         _image?.dispose();
         _image = frame.image;
       });
     } catch (_) {
-      // image abîmée : on attend la suivante
-    } finally {
-      _decoding = false;
-      final next = _pending;
-      _pending = null;
-      if (next != null && mounted) _show(next);
+      // image abîmée : on passe à la suivante
     }
+    if (mounted && identical(feed, _feed)) feed.next();
   }
 
   void _fail(String message) {
@@ -117,8 +102,8 @@ class _WebcamScreenState extends State<WebcamScreen> {
   void _stop() {
     unawaited(_sub?.cancel());
     _sub = null;
-    _tunnel?.close();
-    _tunnel = null;
+    _feed?.close();
+    _feed = null;
   }
 
   @override
@@ -128,6 +113,13 @@ class _WebcamScreenState extends State<WebcamScreen> {
       appBar: AppBar(
         title: const Text('Webcam'),
         actions: [
+          if (_error == null && image != null)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Text('$_fps img/s · ${image.width}x${image.height}'),
+              ),
+            ),
           IconButton(tooltip: 'Relancer', icon: const Icon(Icons.refresh), onPressed: () => unawaited(_start())),
         ],
       ),

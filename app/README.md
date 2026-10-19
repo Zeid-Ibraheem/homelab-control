@@ -137,6 +137,7 @@ Côté serveur, brancher la webcam, renseigner `WEBCAM_DEVICE` et `WEBCAM_PORT` 
 | `lib/src/ssh_link.dart` | Connexions SSH, vérification des clés des machines, tunnel |
 | `lib/src/remote_shell.dart` | Session du terminal, vers le serveur ou vers la tour par le serveur |
 | `lib/src/mjpeg.dart` | Découpage du flux vidéo MJPEG en images |
+| `lib/src/webcam_feed.dart` | Réception de la webcam dans un fil d'exécution séparé (connexion, déchiffrement, découpage), pour que l'écran reste fluide |
 | `lib/src/duration_sheet.dart` | Choix d'une durée au curseur |
 | `lib/src/api.dart` | Commandes envoyées et lecture des réponses JSON |
 | `lib/src/store.dart` | Stockage chiffré |
