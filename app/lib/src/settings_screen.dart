@@ -30,7 +30,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _message;
 
   static final _userPattern = RegExp(r'^[a-z_][a-z0-9_-]{0,31}$');
-  static final _addressPattern = RegExp(r'^[A-Za-z0-9.:-]{1,253}$');
 
   @override
   void dispose() {
@@ -39,6 +38,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _towerAddress.dispose();
     super.dispose();
   }
+
+  static String _serverTermCommand(String line) =>
+      'sudo ~/homelab-control/server/install.sh add-terminal-key "$line"';
+  static String _towerTermCommand(String line) => 'sudo tower/install.sh add-terminal-key "$line"';
 
   void _copy(String text, String what) {
     Clipboard.setData(ClipboardData(text: text));
@@ -55,17 +58,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveTerminal() async {
     final serverUser = _serverUser.text.trim();
     final towerUser = _towerUser.text.trim();
-    final address = _towerAddress.text.trim();
+    final typed = _towerAddress.text.trim();
     for (final u in [serverUser, towerUser]) {
       if (u.isNotEmpty && !_userPattern.hasMatch(u)) {
         setState(() => _message = 'Compte invalide : « $u ».');
         return;
       }
     }
-    if (address.isNotEmpty && !_addressPattern.hasMatch(address)) {
-      setState(() => _message = 'Adresse de la tour invalide.');
+    final addresses = typed.isEmpty ? const <String>[] : parseAddresses(typed);
+    if (addresses == null) {
+      setState(() => _message = 'Adresses de la tour invalides (deux au plus, séparées par un espace).');
       return;
     }
+    final address = addresses.join(' ');
+    _towerAddress.text = address;
     await Store.saveTerminal(
       serverUser: serverUser,
       towerUser: towerUser,
@@ -144,15 +150,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: FilledButton(onPressed: _createTermKey, child: const Text('Créer la clé du terminal')),
             )
           else ...[
-            const Text('Ajoute cette ligne à ~/.ssh/authorized_keys de ton compte, sur le serveur et sur la tour :'),
+            // Les adresses d'origine (from=) sont prises dans la configuration de
+            // chaque machine : le téléphone pour le serveur, le serveur pour la tour.
+            const Text('Autorise-la sur ton compte du serveur :'),
             const SizedBox(height: 4),
-            SelectableText(termLine, style: mono),
+            SelectableText(_serverTermCommand(termLine), style: mono),
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
-                onPressed: () => _copy(termLine, 'Clé du terminal'),
+                onPressed: () => _copy(_serverTermCommand(termLine), 'Commande pour le serveur'),
                 icon: const Icon(Icons.copy, size: 18),
-                label: const Text('Copier la clé du terminal'),
+                label: const Text('Copier la commande pour le serveur'),
+              ),
+            ),
+            const Text('Puis sur ton compte de la tour, depuis le dossier du dépôt :'),
+            const SizedBox(height: 4),
+            SelectableText(_towerTermCommand(termLine), style: mono),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => _copy(_towerTermCommand(termLine), 'Commande pour la tour'),
+                icon: const Icon(Icons.copy, size: 18),
+                label: const Text('Copier la commande pour la tour'),
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: () => _copy(termLine, 'Clé du terminal'),
+                child: const Text('Copier la clé seule'),
               ),
             ),
           ],
@@ -175,8 +201,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             enableSuggestions: false,
             keyboardType: TextInputType.url,
             decoration: const InputDecoration(
-              labelText: 'Adresse de la tour, vue du serveur',
-              helperText: 'Son adresse sur le câble, ou son nom sur le VPN',
+              labelText: 'Adresses de la tour, vues du serveur',
+              helperText: 'Câble puis VPN, séparées par un espace (ex. : 10.0.0.2 ma-tour)',
             ),
           ),
           if (data.towerHostKey != null) ...[

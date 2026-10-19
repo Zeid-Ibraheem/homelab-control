@@ -87,22 +87,31 @@ Le VPN doit être actif dans le même profil Android que l'application.
 
 ## Terminal
 
-Dans les réglages, **Créer la clé du terminal**, puis ajouter la ligne affichée à `~/.ssh/authorized_keys` de ton compte, sur le serveur **et** sur la tour. Mieux : la limiter aux adresses d'où elle arrive, en commençant la ligne par `from="…"` :
+Dans les réglages, **Créer la clé du terminal** : l'application affiche alors deux commandes à copier, à lancer avec `sudo` depuis ton compte.
 
-```text
-# sur le serveur : le téléphone arrive par le VPN
-from="100.64.0.0/10" ssh-ed25519 AAAA… homelab-terminal
-# sur la tour : la connexion part du serveur (adresse sur le câble, ou VPN)
-from="ADRESSE_DU_SERVEUR_SUR_LE_CÂBLE,100.64.0.0/10" ssh-ed25519 AAAA… homelab-terminal
+```bash
+# sur le serveur
+sudo ~/homelab-control/server/install.sh add-terminal-key "ssh-ed25519 AAAA… homelab-terminal"
+# sur la tour, dans le dossier du dépôt
+sudo tower/install.sh add-terminal-key "ssh-ed25519 AAAA… homelab-terminal"
 ```
 
-Toujours dans les réglages, renseigner ton compte sur le serveur, ton compte sur la tour, et l'adresse de la tour **vue depuis le serveur** (son adresse sur le câble, ou son nom sur le VPN). La connexion à la tour passe par le serveur : le compte du serveur doit pouvoir ouvrir un tunnel vers le port 22 de la tour (c'est le cas par défaut avec OpenSSH).
+Chacune ajoute la clé à `~/.ssh/authorized_keys` de ton compte, limitée aux adresses d'où elle arrive (`from="…"`), prises dans la configuration de la machine :
+
+| Machine | La connexion arrive de… | Adresses utilisées |
+|---|---|---|
+| Serveur | du téléphone, par le VPN | `ACTIONS_KEY_FROM` |
+| Tour | du **serveur** (pas du téléphone), par le câble ou par le VPN | `TOWER_KEY_FROM` |
+
+Relancer une commande remplace la ligne de la clé (par exemple après un changement d'adresses).
+
+Toujours dans les réglages, renseigner ton compte sur le serveur, ton compte sur la tour, et les adresses de la tour **vues depuis le serveur** : une ou deux, séparées par un espace, par exemple son adresse sur le câble puis son nom sur le VPN (`10.0.0.2 ma-tour`). L'application essaie la première, puis la seconde si la tour ne répond pas par là. La connexion à la tour passe par le serveur : le compte du serveur doit pouvoir ouvrir un tunnel vers le port 22 de la tour (c'est le cas par défaut avec OpenSSH). Changer ces adresses fait revérifier la clé de la tour à la connexion suivante.
 
 Une barre de touches ajoute ce qui manque au clavier du téléphone : Échap, Tab, Ctrl (enclenché, puis la lettre : Ctrl+C, Ctrl+D…), flèches.
 
 ## Webcam
 
-Côté serveur, renseigner `WEBCAM_PORT` dans `/etc/homelab/homelab.conf` puis relancer `server/install.sh` (voir [`server/README.md`](../server/README.md#webcam)). Le bouton **Webcam** du tableau de bord s'active alors ; l'application lit le flux MJPEG à l'adresse `/stream` (celle d'ustreamer).
+Côté serveur, brancher la webcam, renseigner `WEBCAM_DEVICE` et `WEBCAM_PORT` dans `/etc/homelab/homelab.conf`, puis relancer `server/install.sh` : il installe et lance le serveur vidéo (voir [`server/README.md`](../server/README.md#webcam)). Le bouton **Webcam** du tableau de bord s'active alors. L'image passe par un tunnel SSH : aucun port vidéo n'est ouvert sur le réseau.
 
 ## En cas de problème
 
@@ -112,9 +121,11 @@ Côté serveur, renseigner `WEBCAM_PORT` dans `/etc/homelab/homelab.conf` puis r
 | Clé refusée par le serveur | Commande `add-key` pas encore lancée sur le serveur, ou `ACTIONS_KEY_FROM` sans la plage IPv4 du VPN |
 | La clé du serveur a changé | Si le serveur a été réinstallé : Réglages, puis « Changer de serveur ». Sinon, **ne pas continuer** : quelqu'un essaie peut-être de se faire passer pour lui |
 | Déverrouillage impossible | Aucun verrouillage d'écran configuré sur le téléphone |
-| Tunnel vers la webcam refusé | `WEBCAM_PORT` vide sur le serveur, ou `install.sh` pas relancé après l'avoir renseigné |
+| Webcam injoignable | Serveur vidéo arrêté (sur le serveur : `systemctl status homelab-webcam`), ou `install.sh` pas relancé après un changement de `WEBCAM_PORT` |
+| Webcam (non configurée) | `WEBCAM_PORT` vide sur le serveur |
 | Service non autorisé au redémarrage | Le service n'est pas dans `SERVER_RESTARTABLE` (ou `TOWER_RESTARTABLE` sur la tour), ou `install.sh` pas relancé après l'avoir ajouté |
-| Le serveur ne joint pas la tour (terminal) | Tour éteinte, ou adresse de la tour (vue du serveur) incorrecte dans les réglages |
+| Le serveur ne joint pas la tour (terminal) | Tour éteinte, SSH arrêté sur la tour (`sudo systemctl enable --now sshd`), ou adresses de la tour (vues du serveur) incorrectes dans les réglages |
+| Clé refusée par la tour (terminal) | Commande `add-terminal-key` pas lancée sur la tour, ou `TOWER_KEY_FROM` sans l'adresse par laquelle arrive le serveur |
 | Erreur à la compilation | Envoyer la sortie de `flutter analyze` et de `flutter build apk` |
 
 ## Organisation du code

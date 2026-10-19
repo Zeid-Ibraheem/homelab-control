@@ -5,7 +5,7 @@
 # propriété de root.
 # =============================================================================
 
-HOMELAB_VERSION="0.7.0"
+HOMELAB_VERSION="0.8.0"
 HOMELAB_API=1
 
 # Sources du système (constantes, modifiables seulement dans une copie de test).
@@ -28,7 +28,8 @@ HL_CONF_KEYS="SERVER_HOST SERVER_USER TOWER_HOST TOWER_USER LINK_INTERFACE \
 LINK_SERVER_IP LINK_TOWER_IP TOWER_MAC AUTO_OFF_DEFAULT_HOURS AUTO_OFF_WAKE_HOURS \
 AUTO_OFF_EXTEND_HOURS AUTO_OFF_MAX_HOURS AUTO_OFF_SESSION_GRACE_MIN SERVER_SERVICES \
 TOWER_SERVICES SERVER_SMART_DEVICES TOWER_SMART_DEVICES ACTION_LOG ACTIONS_KEY_FROM \
-TOWER_KEY_FROM WAKE_COOLDOWN_S WAKE_SCHEDULE WEBCAM_PORT SERVER_RESTARTABLE TOWER_RESTARTABLE"
+TOWER_KEY_FROM WAKE_COOLDOWN_S WAKE_SCHEDULE WEBCAM_PORT WEBCAM_DEVICE WEBCAM_RESOLUTION \
+WEBCAM_FPS SERVER_RESTARTABLE TOWER_RESTARTABLE"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 # Lue SANS être exécutée : uniquement des lignes CLÉ="valeur" ou CLÉ=valeur,
@@ -61,6 +62,9 @@ hl_valid_from()  { [[ ${1:-} =~ ^[0-9A-Fa-f:.,/]{1,200}$ ]]; }
 # Disque : /dev/nvme0n1, /dev/sda, ou /dev/disk/by-id/… (nom stable d'un démarrage à l'autre).
 hl_valid_disk()  { [[ ${1:-} =~ ^/dev/(nvme[0-9]{1,2}n[0-9]{1,2}|sd[a-z]{1,2}|disk/by-id/[A-Za-z0-9._:-]{1,120})$ ]]; }
 hl_valid_unit()  { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9@._-]{0,63}$ ]]; }
+# Caméra : /dev/video0, ou /dev/v4l/by-id/… (nom stable d'un branchement à l'autre).
+hl_valid_video() { [[ ${1:-} =~ ^/dev/(video[0-9]{1,2}|v4l/by-(id|path)/[A-Za-z0-9._:-]{1,120})$ ]]; }
+hl_valid_resolution() { [[ ${1:-} =~ ^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$ ]]; }
 # Service redémarrable à distance : minuscules, chiffres et tirets (les seuls
 # caractères qu'une commande reçue par SSH peut contenir), 48 au plus pour que
 # « tower-restart NOM » tienne dans les 64 caractères d'une commande.
@@ -582,4 +586,52 @@ hl_restart_reply() { # hl_restart_reply AIDE_ROOT SERVICE
   hl_log_action "restart $2" "$result"
   printf '{"ok":true,"action":"restart","service":%s,"result":"%s","state":"%s"}\n' \
     "$(hl_json_str "$2")" "$result" "$st"
+}
+
+# Autorise la clé du terminal de l'application sur le compte de l'administrateur
+# qui lance la commande avec sudo (SUDO_USER) : accès complet à ce compte, mais
+# seulement depuis les adresses FROM, avec les options OPTIONS. Écrit avec les
+# droits de ce compte, jamais en root dans son dossier. Une ligne existante de
+# la même clé est remplacée : relancer la commande met ses options à jour.
+hl_add_terminal_key() { # hl_add_terminal_key "CLÉ PUBLIQUE" "FROM" "OPTIONS"
+  local key=$1 from=$2 opts=$3 user=${SUDO_USER:-} home tmp fp blob
+  local re='^(ssh-ed25519|sk-ssh-ed25519@openssh\.com|ecdsa-sha2-nistp256|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [A-Za-z0-9@._-]{1,64})?$'
+  key=$(printf '%s' "$key" | tr -d '\r\n')
+  if ! [[ $key =~ $re ]]; then
+    echo "✗ clé publique invalide (attendu : « ssh-ed25519 AAAA… homelab-terminal »)" >&2; return 1
+  fi
+  if ! [[ $user =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || [ "$user" = root ]; then
+    echo "✗ lance la commande avec sudo depuis ton propre compte (pas depuis root)" >&2; return 1
+  fi
+  home=$(getent passwd "$user" | cut -d: -f6)
+  if ! [[ $home =~ ^/[A-Za-z0-9._/-]{1,200}$ ]] || [ ! -d "$home" ]; then
+    echo "✗ dossier personnel de $user introuvable" >&2; return 1
+  fi
+  if [ -n "$from" ] && ! hl_valid_from "$from"; then
+    echo "✗ adresses d'origine invalides dans la configuration : $from" >&2; return 1
+  fi
+  tmp=$(mktemp)
+  printf '%s\n' "$key" > "$tmp"
+  if ! fp=$(ssh-keygen -l -f "$tmp" 2>/dev/null); then rm -f "$tmp"; echo "✗ clé publique illisible" >&2; return 1; fi
+  rm -f "$tmp"
+  [ -z "$from" ] || opts="from=\"$from\",$opts"
+  blob=$(printf '%s' "$key" | cut -d' ' -f2)
+  # Avec les droits du compte : retire l'ancienne ligne de cette clé, ajoute la nouvelle.
+  sudo -u "$user" sh -c '
+    set -e
+    umask 077
+    d="$1/.ssh"; f="$d/authorized_keys"
+    if [ -L "$d" ] || [ -L "$f" ]; then echo "✗ $d ou $f est un lien : arrêt" >&2; exit 1; fi
+    mkdir -p "$d"
+    [ -f "$f" ] || : > "$f"
+    grep -vF -- "$2" "$f" > "$f.new" || true
+    printf "%s %s\n" "$3" "$4" >> "$f.new"
+    mv -f "$f.new" "$f"
+  ' sh "$home" "$blob" "$opts" "$key" || return 1
+  printf '✓ clé du terminal autorisée pour %s : %s\n' "$user" "$fp"
+  if [ -n "$from" ]; then
+    printf '  acceptée seulement depuis : %s\n' "$from"
+  else
+    printf '  ! acceptée depuis n'"'"'importe quelle adresse : aucune adresse d'"'"'origine dans la configuration\n'
+  fi
 }

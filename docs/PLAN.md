@@ -72,7 +72,7 @@ Chaque phase a un critère de fin vérifiable.
 | **3** 🚧 | Application minimale : verrou (empreinte ou code), clé SSH créée sur le téléphone, vérification de la clé du serveur, tableau de bord, boutons principaux, journal (voir [`app/README.md`](../app/README.md)) | Allumer, éteindre et prolonger depuis l'application |
 | **4** 🚧 | Surveillance complète : disques (SMART), services avec redémarrage des services autorisés, sécurité, signal Wi-Fi ; durée de l'extinction selon l'allumage, prolongation au choix | Tous les indicateurs visibles dans l'application |
 | **5** 🚧 | Terminal intégré, vers le serveur et vers la tour (en passant par le serveur), avec une clé séparée | Session interactive vers chaque machine depuis l'application |
-| **6** 🚧 | Webcam par tunnel SSH, affichage des allumages programmés | Flux visible, serveur vidéo en écoute locale uniquement |
+| **6** 🚧 | Webcam par tunnel SSH (serveur vidéo installé et durci par `install.sh`), affichage des allumages programmés | Flux visible, serveur vidéo en écoute locale uniquement |
 
 🚧 = code écrit ; la partie machines est testée, l'application reste à valider sur le téléphone.
 
@@ -116,6 +116,7 @@ Codes de sortie : 0 = ok, 1 = échec, 2 = commande refusée.
 | Terminal | xterm.dart | Émulateur de terminal complet, prévu pour dartssh2 |
 | Verrou de l'application | local_auth, flutter_secure_storage | Empreinte digitale ; stockage chiffré en AES-GCM, clé protégée par le Keystore d'Android |
 | Côté machines | Bash, systemd, sudoers, `authorized_keys` | Rien à installer, rien de nouveau qui tourne en permanence |
+| Webcam (si elle est configurée) | ustreamer, paquet Debian | Serveur vidéo léger : transmet tel quel le flux déjà compressé par la caméra, ralentit quand personne ne regarde |
 
 ## Points à vérifier pendant le développement
 

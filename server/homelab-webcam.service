@@ -1,0 +1,55 @@
+# Webcam du homelab : ustreamer, qui n'écoute que sur la machine elle-même.
+# L'application y accède par un tunnel SSH (voir server/README.md#webcam).
+#
+# Installé dans /etc/systemd/system/homelab-webcam.service par
+# server/install.sh, qui remplace les valeurs @…@ par celles de
+# /etc/homelab/homelab.conf (WEBCAM_DEVICE, WEBCAM_PORT, WEBCAM_RESOLUTION,
+# WEBCAM_FPS), après les avoir vérifiées.
+#
+# --format=MJPEG : la plupart des webcams compressent elles-mêmes les images,
+#   ustreamer les transmet telles quelles (presque aucun calcul) ; sinon, il
+#   revient tout seul au format brut et compresse lui-même.
+# --slowdown : 1 image par seconde au plus quand personne ne regarde.
+[Unit]
+Description=Webcam du homelab (ustreamer, écoute locale uniquement)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/ustreamer --device=@DEVICE@ --host=127.0.0.1 --port=@PORT@ --format=MJPEG --resolution=@RESOLUTION@ --desired-fps=@FPS@ --slowdown
+Restart=always
+RestartSec=5
+
+# Compte temporaire créé à chaque démarrage, sans droits, membre du seul
+# groupe video (accès aux caméras). Pas de liste de périphériques
+# (DevicePolicy) : figée au démarrage du service, elle refuserait une caméra
+# branchée ensuite.
+DynamicUser=yes
+SupplementaryGroups=video
+
+# Aucun échange réseau avec une autre machine, même si l'adresse d'écoute
+# était mal réglée : seuls 127.0.0.1 et ::1 sont autorisés.
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Rien d'autre : aucun privilège, système en lecture seule.
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

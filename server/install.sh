@@ -7,7 +7,11 @@
 #   sudo server/install.sh add-key "CLÉ"    autorise une clé publique « actions »
 #                                           (relancer install applique aussi les
 #                                           réglages actuels aux clés déjà autorisées)
-#   sudo server/install.sh uninstall        retire scripts, minuteur, règle sudo et réglage SSH
+#   sudo server/install.sh add-terminal-key "CLÉ"
+#                                           autorise la clé du terminal de l'application
+#                                           sur TON compte (accès complet), depuis les
+#                                           adresses de ACTIONS_KEY_FROM seulement
+#   sudo server/install.sh uninstall        retire scripts, minuteurs, webcam, règle sudo et réglage SSH
 #
 # Aucune valeur personnelle ici : tout vient de /etc/homelab/homelab.conf.
 # =============================================================================
@@ -55,6 +59,55 @@ wake_specs() {
     fi
     printf '%s\n' "$spec"
   done
+}
+
+# Webcam : serveur vidéo ustreamer géré par le homelab (WEBCAM_DEVICE), qui
+# n'écoute que sur 127.0.0.1:WEBCAM_PORT. Vide : rien n'est installé (un autre
+# serveur vidéo peut alors être utilisé, avec WEBCAM_PORT seul).
+install_webcam() {
+  local unit="$UNITDIR/homelab-webcam.service" tmp state lines="" i
+  if [ -z "${WEBCAM_DEVICE:-}" ]; then
+    if [ -e "$unit" ]; then
+      systemctl disable --now homelab-webcam.service 2>/dev/null || true
+      rm -f "$unit"
+      systemctl daemon-reload
+      ok "webcam : serveur vidéo du homelab retiré"
+    fi
+    return 0
+  fi
+  if ! command -v ustreamer >/dev/null 2>&1; then
+    say "→ Installation de : ustreamer"
+    apt-get install -y --no-install-recommends ustreamer
+  fi
+  # Valeurs vérifiées par check_conf : lettres, chiffres, « / . _ : - x » seulement.
+  tmp=$(mktemp)
+  sed -e "s|@DEVICE@|$WEBCAM_DEVICE|" -e "s|@PORT@|$WEBCAM_PORT|" \
+      -e "s|@RESOLUTION@|${WEBCAM_RESOLUTION:-1280x720}|" -e "s|@FPS@|${WEBCAM_FPS:-5}|" \
+      "$HERE/homelab-webcam.service" > "$tmp"
+  install -m 644 "$tmp" "$unit"
+  rm -f "$tmp"
+  systemctl daemon-reload
+  # Un souci de webcam ne doit pas arrêter le reste de l'installation : l'état
+  # est vérifié juste après.
+  systemctl enable homelab-webcam.service || true
+  systemctl restart homelab-webcam.service || true
+  # Qui écoute sur ce port ? Il faut ustreamer, et seulement sur 127.0.0.1 :
+  # sinon le tunnel de l'application mènerait à un autre programme.
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    lines=$(ss -Hltnp "sport = :$WEBCAM_PORT" 2>/dev/null || true)
+    [ -n "$lines" ] && break
+    sleep 0.5
+  done
+  state=$(systemctl is-active homelab-webcam.service 2>/dev/null || true)
+  if [ -n "$lines" ] && { grep -qv '"ustreamer"' <<< "$lines" || awk '{print $4}' <<< "$lines" | grep -qvxF "127.0.0.1:$WEBCAM_PORT"; }; then
+    systemctl stop homelab-webcam.service 2>/dev/null || true
+    die "le port $WEBCAM_PORT est déjà pris par un autre programme ($(awk '{print $4, $6}' <<< "$lines" | paste -sd ' ' -)) : choisis un autre WEBCAM_PORT"
+  fi
+  if [ "$state" = "active" ] && [ -n "$lines" ]; then
+    ok "webcam : ustreamer en écoute sur 127.0.0.1:$WEBCAM_PORT seulement ($WEBCAM_DEVICE, ${WEBCAM_RESOLUTION:-1280x720}, ${WEBCAM_FPS:-5} images/s)"
+  else
+    say "  ! le serveur vidéo ne démarre pas ($state) : journalctl -u homelab-webcam -n 20"
+  fi
 }
 
 install_wake_timer() {
@@ -158,6 +211,16 @@ check_conf() {
   if [ -n "${WEBCAM_PORT:-}" ] && ! hl_in_range "$WEBCAM_PORT" 1 65535; then
     say "  ✗ WEBCAM_PORT doit être un port (1 à 65535), ou vide"; bad=1
   fi
+  if [ -n "${WEBCAM_DEVICE:-}" ]; then
+    hl_valid_video "$WEBCAM_DEVICE" \
+      || { say "  ✗ WEBCAM_DEVICE : « $WEBCAM_DEVICE » n'est pas une caméra (/dev/video0, /dev/v4l/by-id/…)"; bad=1; }
+    # Le compte du serveur vidéo n'a aucun droit : pas de port réservé (< 1024).
+    hl_in_range "${WEBCAM_PORT:-}" 1024 65535 \
+      || { say "  ✗ WEBCAM_DEVICE est rempli : il faut aussi WEBCAM_PORT, entre 1024 et 65535 (par exemple 8080)"; bad=1; }
+    hl_valid_resolution "${WEBCAM_RESOLUTION:-1280x720}" \
+      || { say "  ✗ WEBCAM_RESOLUTION : largeur x hauteur, par exemple 1280x720"; bad=1; }
+    hl_in_range "${WEBCAM_FPS:-5}" 1 60 || { say "  ✗ WEBCAM_FPS doit être un nombre entre 1 et 60"; bad=1; }
+  fi
   for u in ${SERVER_SMART_DEVICES:-}; do
     hl_valid_disk "$u" || { say "  ✗ SERVER_SMART_DEVICES : « $u » n'est pas un disque (/dev/nvme0n1, /dev/sda, /dev/disk/by-id/…)"; bad=1; }
   done
@@ -167,6 +230,10 @@ check_conf() {
   check_restartable SERVER_RESTARTABLE "${SERVER_RESTARTABLE:-}" "${SERVER_SERVICES:-}" || bad=1
   [ "$bad" -eq 0 ] || die "corrige $CONF (sudoedit $CONF), puis relance."
   [ -e "/sys/class/net/$LINK_INTERFACE" ] || say "  ! l'interface $LINK_INTERFACE n'est pas branchée pour l'instant"
+  if [ -n "${WEBCAM_DEVICE:-}" ] && [ ! -e "$WEBCAM_DEVICE" ]; then
+    say "  ! $WEBCAM_DEVICE n'existe pas pour l'instant (caméra débranchée ?) : le serveur vidéo l'attendra"
+    say "    caméras vues maintenant : $(ls /dev/v4l/by-id/ 2>/dev/null | grep -- '-index0$' | paste -sd ' ' - || true)"
+  fi
   ok "configuration valide"
 }
 
@@ -181,6 +248,7 @@ do_install() {
   command -v ssh >/dev/null 2>&1       || missing+=(openssh-client)
   command -v smartctl >/dev/null 2>&1  || missing+=(smartmontools)
   command -v jq >/dev/null 2>&1        || missing+=(jq)
+  command -v ss >/dev/null 2>&1        || missing+=(iproute2)
   if [ "${#missing[@]}" -gt 0 ]; then
     say "→ Installation de : ${missing[*]}"
     apt-get install -y --no-install-recommends "${missing[@]}"
@@ -294,6 +362,9 @@ do_install() {
   # 9. Allumage programmé (WAKE_SCHEDULE), ou rien si la valeur est vide
   install_wake_timer
 
+  # 9 bis. Serveur vidéo de la webcam (WEBCAM_DEVICE), ou rien si la valeur est vide
+  install_webcam
+
   # 10. L'administrateur peut lire le journal (groupe homelab)
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     usermod -aG "$HL_USER" "$SUDO_USER"
@@ -307,6 +378,7 @@ do_install() {
   say
   ok "Installation terminée."
   say "Clé « actions » du téléphone : sudo $0 add-key \"ssh-ed25519 AAAA… commentaire\""
+  say "Clé du terminal du téléphone : sudo $0 add-terminal-key \"ssh-ed25519 AAAA… homelab-terminal\""
   say "Pilotage de la tour : installer tower/install.sh sur la tour, puis y autoriser"
   say "  la clé publique du serveur ($(dirname "$CONF")/server-relay.pub)."
 }
@@ -345,13 +417,18 @@ do_uninstall() {
     rm -f "$UNITDIR/homelab-wake.service" "$UNITDIR/homelab-wake.timer"
     systemctl daemon-reload
   fi
+  if [ -e "$UNITDIR/homelab-webcam.service" ]; then
+    systemctl disable --now homelab-webcam.service 2>/dev/null || true
+    rm -f "$UNITDIR/homelab-webcam.service"
+    systemctl daemon-reload
+  fi
   rm -f "$BIN" "$SUDOERS" "$LIBDIR/homelab-root"
   [ -e /usr/local/bin/tour ] || rm -rf "$LIBDIR"     # tour installée ici aussi : on garde lib.sh
   if [ -f "$SSHD_DROPIN" ]; then
     rm -f "$SSHD_DROPIN"
     reload_ssh || true
   fi
-  ok "scripts, minuteur, règle sudo et réglage SSH retirés"
+  ok "scripts, minuteurs, serveur vidéo, règle sudo et réglage SSH retirés"
   say "Conservés : $CONF, $LOGDIR, le compte $HL_USER et ses clés."
   say "Pour tout effacer : sudo userdel -r $HL_USER; sudo groupdel $HL_USER; sudo rm -rf $LOGDIR /etc/homelab"
 }
@@ -360,6 +437,12 @@ case "${1:-install}" in
   install)   do_install ;;
   add-key)   [ "$#" -eq 2 ] || die "usage : $0 add-key \"ssh-ed25519 AAAA… commentaire\""
              do_add_key "$2" ;;
+  add-terminal-key)
+             # Le téléphone arrive des mêmes adresses que pour la clé « actions ».
+             # Tunnels permis : le terminal de la tour passe par ce serveur.
+             [ "$#" -eq 2 ] || die "usage : sudo $0 add-terminal-key \"ssh-ed25519 AAAA… homelab-terminal\""
+             hl_load_conf "$CONF" || die "configuration illisible : $CONF"
+             hl_add_terminal_key "$2" "${ACTIONS_KEY_FROM:-}" "restrict,pty,port-forwarding" || exit 1 ;;
   uninstall) do_uninstall ;;
-  *)         die "usage : $0 [install | add-key \"CLÉ\" | uninstall]" ;;
+  *)         die "usage : $0 [install | add-key \"CLÉ\" | add-terminal-key \"CLÉ\" | uninstall]" ;;
 esac

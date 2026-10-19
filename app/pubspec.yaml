@@ -1,7 +1,7 @@
 name: homelab_control
 description: Télécommande SSH d'un homelab (serveur toujours allumé et tour allumée à la demande).
 publish_to: 'none'
-version: 0.7.0+3
+version: 0.8.0+5
 
 environment:
   sdk: ^3.10.0

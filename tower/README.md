@@ -88,7 +88,15 @@ Puis autoriser la clé du serveur, publiée par `server/install.sh` :
 sudo tower/install.sh add-key "$(ssh utilisateur@serveur cat /etc/homelab/server-relay.pub)"
 ```
 
-Si un pare-feu est actif sur la tour, il doit laisser entrer SSH (port 22) depuis l'adresse du serveur sur le câble.
+Si un pare-feu est actif sur la tour, il doit laisser entrer SSH (port 22) depuis l'adresse du serveur sur le câble. Sur Arch, SSH n'est pas lancé par défaut : `sudo systemctl enable --now sshd`.
+
+Pour le terminal de l'application (clé séparée, accès complet à **ton** compte), l'application affiche la commande ; elle se lance avec `sudo` depuis ton compte, dans le dossier du dépôt :
+
+```bash
+sudo tower/install.sh add-terminal-key "ssh-ed25519 AAAA… homelab-terminal"
+```
+
+La clé est acceptée seulement depuis les adresses de `TOWER_KEY_FROM` : le terminal de l'application arrive toujours **du serveur** (par le câble ou par le VPN), jamais directement du téléphone. Options `restrict,pty` : un terminal, sans tunnel ni transfert d'agent. Relancer la commande remplace la ligne de cette clé.
 
 ### À vérifier une fois sur la tour
 

@@ -1,9 +1,5 @@
 # Règles d'analyse du code : celles recommandées par Flutter, plus quelques
 # règles de sûreté.
-analyzer:
-  exclude:
-    - build/**
-    - android/**
 include: package:flutter_lints/flutter.yaml
 
 linter:

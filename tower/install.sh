@@ -6,6 +6,10 @@
 # À lancer en root, depuis une copie du dépôt sur la tour :
 #   sudo tower/install.sh                  installe ou met à jour
 #   sudo tower/install.sh add-key "CLÉ"    autorise la clé publique du serveur
+#   sudo tower/install.sh add-terminal-key "CLÉ"
+#                                          autorise la clé du terminal de l'application
+#                                          sur TON compte (accès complet), depuis les
+#                                          adresses du serveur (TOWER_KEY_FROM) seulement
 #   sudo tower/install.sh uninstall        retire scripts, minuteur, règle sudo et réglage SSH
 #
 # Aucune valeur personnelle ici : tout vient de /etc/homelab/homelab.conf.
@@ -179,7 +183,12 @@ do_install() {
   systemctl enable --now homelab-autooff.timer
   ok "extinction automatique active (homelab-autooff.timer)"
 
-  # 8. SSH : le compte homelab ne peut lancer que le script « tour »
+  # 8. SSH : le compte homelab ne peut lancer que le script « tour ». Sur Arch,
+  #    sshd n'est pas lancé par défaut : sans lui, le serveur ne joint pas la tour.
+  if ! systemctl is-active sshd >/dev/null 2>&1; then
+    systemctl enable --now sshd || die "impossible de démarrer SSH : sudo systemctl status sshd"
+    ok "SSH démarré, et lancé à chaque démarrage (sshd)"
+  fi
   install -m 644 "$HERE/sshd-homelab-tower.conf" "$SSHD_DROPIN"
   if ! reload_ssh; then
     rm -f "$SSHD_DROPIN"
@@ -205,6 +214,7 @@ do_install() {
   ok "Installation terminée."
   say "Étape suivante, autoriser la clé du serveur :"
   say "  sudo $0 add-key \"\$(ssh <utilisateur>@<serveur> cat /etc/homelab/server-relay.pub)\""
+  say "Terminal de l'application : sudo $0 add-terminal-key \"ssh-ed25519 AAAA… homelab-terminal\""
 }
 
 do_add_key() { # do_add_key "CLÉ PUBLIQUE"
@@ -251,6 +261,12 @@ case "${1:-install}" in
   install)   do_install ;;
   add-key)   [ "$#" -eq 2 ] || die "usage : $0 add-key \"ssh-ed25519 AAAA… commentaire\""
              do_add_key "$2" ;;
+  add-terminal-key)
+             # Le terminal de l'application arrive toujours du serveur (câble ou
+             # VPN) : mêmes adresses que la clé du serveur. Aucun tunnel.
+             [ "$#" -eq 2 ] || die "usage : sudo $0 add-terminal-key \"ssh-ed25519 AAAA… homelab-terminal\""
+             hl_load_conf "$CONF" || die "configuration illisible : $CONF (installe d'abord : sudo $0)"
+             hl_add_terminal_key "$2" "${TOWER_KEY_FROM:-}" "restrict,pty" || exit 1 ;;
   uninstall) do_uninstall ;;
-  *)         die "usage : $0 [install | add-key \"CLÉ\" | uninstall]" ;;
+  *)         die "usage : $0 [install | add-key \"CLÉ\" | add-terminal-key \"CLÉ\" | uninstall]" ;;
 esac

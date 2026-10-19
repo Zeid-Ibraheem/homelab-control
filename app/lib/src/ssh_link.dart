@@ -104,6 +104,15 @@ LinkError explainError(
   return LinkError('Connexion interrompue : $e');
 }
 
+/// Adresses de la tour vues du serveur : une ou deux (le câble, puis le VPN),
+/// séparées par des espaces ou des virgules. Null si la saisie est invalide.
+List<String>? parseAddresses(String text, {int max = 2}) {
+  final parts = [for (final p in text.split(RegExp(r'[\s,]+'))) if (p.isNotEmpty) p];
+  if (parts.isEmpty || parts.length > max) return null;
+  final valid = RegExp(r'^[A-Za-z0-9.:-]{1,253}$');
+  return parts.every(valid.hasMatch) ? parts : null;
+}
+
 /// Lit une clé privée OpenSSH gardée par l'application.
 List<SSHKeyPair> parseIdentities(String pem) {
   try {
@@ -256,8 +265,9 @@ class SshLink {
     } catch (e) {
       client.close().ignore();
       if (e is TimeoutException) throw const LinkError('Le serveur met trop de temps à ouvrir le tunnel.');
-      throw LinkError("Tunnel vers la webcam refusé par le serveur : vérifie WEBCAM_PORT dans sa "
-          "configuration, puis relance install.sh ($e)");
+      throw LinkError('Webcam injoignable sur le port $port du serveur : serveur vidéo arrêté '
+          '(sur le serveur : systemctl status homelab-webcam), ou WEBCAM_PORT changé sans relancer '
+          'install.sh ($e)');
     }
   }
 }

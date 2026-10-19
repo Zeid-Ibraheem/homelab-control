@@ -34,9 +34,16 @@ ACTIONS_KEY_FROM="100.64.0.0/10"   # adresses d'où la clé « actions » est ac
 WAKE_COOLDOWN_S=20                 # délai minimal entre deux réveils, en secondes
 
 # ── Webcam (utilisé sur le serveur) ────────────────────────────────────────
+WEBCAM_DEVICE=""                   # caméra filmée par le serveur vidéo du homelab
+                                   # (ustreamer, installé par install.sh) : /dev/video0,
+                                   # ou mieux /dev/v4l/by-id/…-video-index0 (nom stable ;
+                                   # liste : ls -l /dev/v4l/by-id/). Vide = aucun
 WEBCAM_PORT=""                     # port du serveur vidéo, qui n'écoute que sur
-                                   # 127.0.0.1 (ex. ustreamer : 8080) ; l'appli y
-                                   # accède par un tunnel SSH. Vide = pas de webcam
+                                   # 127.0.0.1 (ex. 8080, entre 1024 et 65535) ; l'appli
+                                   # y accède par un tunnel SSH. Vide = pas de webcam
+WEBCAM_RESOLUTION="1280x720"       # demandée à la caméra (elle prend la plus proche)
+WEBCAM_FPS=5                       # images par seconde ; en 1280x720, compter environ
+                                   # 25 Mo par minute regardée (estimation)
 
 # ── Allumage programmé de la tour (utilisé sur le serveur) ─────────────────
 WAKE_SCHEDULE=""                   # vide = aucun. Format systemd (OnCalendar),

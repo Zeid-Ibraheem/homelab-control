@@ -9,7 +9,8 @@ Point d'entrée du téléphone sur le **serveur toujours allumé** (phases 1, 2,
 | `homelab` | `/usr/local/bin/homelab` | Script lancé par la clé « actions » : liste fermée d'actions, réponses en JSON, journal |
 | `homelab-root` | `/usr/local/lib/homelab/homelab-root` | Les seules actions qui demandent les droits root (réveil, lecture des disques et des journaux, redémarrage d'un service autorisé), permises par `sudo` avec des arguments fixes |
 | `sshd-homelab.conf` | `/etc/ssh/sshd_config.d/50-homelab.conf` | Le compte `homelab` ne peut lancer que le script |
-| `install.sh` | | Installation, ajout d'une clé, désinstallation |
+| `homelab-webcam.service` | `/etc/systemd/system/homelab-webcam.service` | Modèle du serveur vidéo de la webcam (ustreamer), en écoute locale uniquement, si `WEBCAM_DEVICE` est rempli |
+| `install.sh` | | Installation, ajout d'une clé (« actions » ou terminal), désinstallation |
 
 La bibliothèque commune ([`common/lib.sh`](../common/lib.sh)) est installée dans `/usr/local/lib/homelab/lib.sh`.
 
@@ -76,6 +77,16 @@ Host hl
     IdentitiesOnly yes
     AddressFamily inet
 ```
+
+## Clé du terminal de l'application
+
+Le terminal de l'application utilise une clé séparée, avec un accès complet à **ton** compte. L'application affiche la commande qui l'autorise ; elle se lance avec `sudo` depuis ton compte :
+
+```bash
+sudo ~/homelab-control/server/install.sh add-terminal-key "ssh-ed25519 AAAA… homelab-terminal"
+```
+
+La clé est ajoutée à `~/.ssh/authorized_keys` de ton compte avec `from="…"` = les adresses de `ACTIONS_KEY_FROM` (celles du téléphone), et `restrict,pty,port-forwarding` : un terminal et des tunnels (le terminal de la tour passe par ici), rien d'autre. Relancer la commande remplace la ligne de cette clé, par exemple après un changement de `ACTIONS_KEY_FROM`.
 
 ## Actions
 
@@ -152,12 +163,34 @@ Pour la tour, c'est `TOWER_RESTARTABLE`, dans la configuration **de la tour** : 
 
 ## Webcam
 
-Le serveur vidéo (par exemple ustreamer) doit n'écouter que sur la machine elle-même (`127.0.0.1`) ; vérifier avec `ss -ltnp`. Avec `WEBCAM_PORT` renseigné, `install.sh` :
+Brancher la webcam sur le serveur, puis trouver son nom stable (il ne change pas d'un branchement à l'autre) :
 
+```bash
+ls -l /dev/v4l/by-id/
+```
+
+Chaque caméra y apparaît deux fois : prendre la ligne qui finit par `-video-index0`. Sur un portable, la caméra intégrée y figure aussi (souvent `…Integrated_Webcam…`) : ne pas la confondre avec la webcam branchée. Dans `/etc/homelab/homelab.conf` :
+
+```bash
+WEBCAM_DEVICE="/dev/v4l/by-id/usb-…-video-index0"
+WEBCAM_PORT="8080"
+WEBCAM_RESOLUTION="1280x720"
+WEBCAM_FPS=5
+```
+
+Puis relancer `install.sh`. Il :
+
+- installe le serveur vidéo `ustreamer` (paquet Debian) et le lance comme service, `homelab-webcam`, avec un compte temporaire sans aucun droit, qui n'a accès qu'aux caméras ;
+- le fait écouter sur `127.0.0.1` seulement. En plus, le service ne peut échanger avec aucune autre machine (`IPAddressDeny=any`), même si cette adresse était mal réglée ;
+- vérifie que c'est bien ustreamer, et lui seul, qui répond sur ce port : sinon le tunnel mènerait à un autre programme, et l'installation s'arrête ;
 - autorise le compte `homelab` à ouvrir **un seul** tunnel, vers `127.0.0.1:WEBCAM_PORT` (`AllowTcpForwarding local` et `PermitOpen` dans le réglage SSH, vérifiés avec `sshd -T`) ;
-- donne aux clés « actions » l'option `port-forwarding,permitopen="127.0.0.1:PORT"`, y compris à celles déjà autorisées (relancer `install.sh` après un changement de `WEBCAM_PORT`).
+- donne aux clés « actions » l'option `port-forwarding,permitopen="127.0.0.1:PORT"`, y compris à celles déjà autorisées.
 
-L'application affiche le flux MJPEG (`/stream`) à travers ce tunnel : aucun port vidéo n'est ouvert sur le réseau. Avec `WEBCAM_PORT` vide, plus aucun tunnel n'est possible.
+La plupart des webcams compressent elles-mêmes leurs images : ustreamer les transmet telles quelles, sans calcul. Quand personne ne regarde, il ralentit à 1 image par seconde au plus. Débit, à titre d'estimation : en 1280x720 à 5 images par seconde, environ 25 Mo par minute regardée (en 4G, `640x480` divise environ par 3). Caméra débranchée : le service l'attend, et l'application affiche un écran noir marqué « NO LIVE VIDEO ».
+
+Pour la redémarrer depuis l'application si elle se fige : ajouter `homelab-webcam` à `SERVER_SERVICES` et à `SERVER_RESTARTABLE`.
+
+Un autre serveur vidéo reste possible : `WEBCAM_DEVICE` vide et `WEBCAM_PORT` seul. Il doit alors n'écouter que sur `127.0.0.1` (vérifier avec `ss -ltnp`). L'application lit le flux MJPEG à l'adresse `/stream`, celle d'ustreamer. Avec `WEBCAM_PORT` vide, plus aucun tunnel n'est possible.
 
 ## Allumage programmé
 
@@ -184,6 +217,7 @@ Puis relancer `sudo ~/homelab-control/server/install.sh` : il vérifie chaque da
 | `wake` répond `sent` mais la tour ne s'allume pas | Réveil par le réseau désactivé dans le BIOS ou dans la carte réseau de la tour ; câble débranché (`link.carrier` à `false`) |
 | `relay_failed` alors que la tour est allumée | Clé du serveur pas encore autorisée sur la tour (`tower/install.sh add-key`), `TOWER_KEY_FROM` sans l'adresse du serveur, ou pare-feu de la tour |
 | `relay_failed` après une réinstallation de la tour | Son empreinte a changé : `sudo -u homelab rm /var/lib/homelab/.ssh/known_hosts_tower`, puis réessayer |
+| Webcam : « NO LIVE VIDEO » dans l'application | Caméra débranchée, ou mauvais `WEBCAM_DEVICE` (`ls -l /dev/v4l/by-id/`) ; `journalctl -u homelab-webcam -n 20` |
 | Test à la main depuis le serveur | `sudo -u homelab ssh -i /var/lib/homelab/.ssh/id_tower -o HostKeyAlias=homelab-tower -o UserKnownHostsFile=/var/lib/homelab/.ssh/known_hosts_tower homelab@ADRESSE_DE_LA_TOUR status` |
 
 ## Désinstaller
@@ -192,4 +226,4 @@ Puis relancer `sudo ~/homelab-control/server/install.sh` : il vérifie chaque da
 sudo ~/homelab-control/server/install.sh uninstall
 ```
 
-Retire les scripts, le minuteur d'allumage, la règle `sudo` et le réglage SSH. La configuration, le journal et le compte `homelab` sont conservés : la commande pour les effacer est affichée.
+Retire les scripts, le minuteur d'allumage, le serveur vidéo de la webcam, la règle `sudo` et le réglage SSH. La configuration, le journal et le compte `homelab` sont conservés : la commande pour les effacer est affichée.

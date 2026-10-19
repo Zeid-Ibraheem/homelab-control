@@ -59,18 +59,23 @@ class RemoteShell {
       clients.add(server);
       var target = server;
       if (toTower) {
-        final address = data.towerAddress!;
+        // Câble d'abord, puis VPN : c'est la même tour, donc la même clé.
+        final addresses = parseAddresses(data.towerAddress!) ?? [data.towerAddress!];
+        final first = await _forwardFirst(server, addresses);
+        final address = first.$2;
+        var socket = first.$1;
         var pin = data.towerHostKey;
         if (pin == null) {
-          final seen = await probeHostKeyOn(await _forward(server, address), user: data.towerUser!);
+          final seen = await probeHostKeyOn(socket, user: data.towerUser!);
           if (!await confirmTowerKey(seen)) {
             throw const LinkError('Clé de la tour non vérifiée : connexion annulée.');
           }
           await Store.saveTowerHostKey(seen.pin);
           pin = seen.pin;
+          socket = await _forward(server, address);
         }
         final tower = await authenticate(
-          await _forward(server, address),
+          socket,
           user: data.towerUser!,
           identities: identities,
           pinned: pin,
@@ -90,13 +95,29 @@ class RemoteShell {
     }
   }
 
+  static const _forwardTimeout = Duration(seconds: 10);
+
   // Canal vers le port SSH de la tour, ouvert depuis le serveur.
   static Future<SSHSocket> _forward(SSHClient server, String address) async {
     try {
-      return await server.forwardLocal(address, 22).timeout(const Duration(seconds: 15));
+      return await server.forwardLocal(address, 22).timeout(_forwardTimeout);
     } catch (e) {
       throw LinkError('Le serveur ne joint pas la tour à l\'adresse « $address » : est-elle allumée ? ($e)');
     }
+  }
+
+  // Premier chemin qui répond, dans l'ordre des adresses (câble, puis VPN).
+  // Ouvrir un canal ne lance rien sur la tour : on peut réessayer sans risque.
+  static Future<(SSHSocket, String)> _forwardFirst(SSHClient server, List<String> addresses) async {
+    final failures = <String>[];
+    for (final address in addresses) {
+      try {
+        return (await server.forwardLocal(address, 22).timeout(_forwardTimeout), address);
+      } catch (e) {
+        failures.add('« $address » : $e');
+      }
+    }
+    throw LinkError('Le serveur ne joint pas la tour (${failures.join(' ; ')}) : est-elle allumée ?');
   }
 
   void write(String text) => _session.write(utf8.encode(text));
