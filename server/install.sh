@@ -65,7 +65,7 @@ wake_specs() {
 # n'écoute que sur 127.0.0.1:WEBCAM_PORT. Vide : rien n'est installé (un autre
 # serveur vidéo peut alors être utilisé, avec WEBCAM_PORT seul).
 install_webcam() {
-  local unit="$UNITDIR/homelab-webcam.service" tmp state lines="" i
+  local unit="$UNITDIR/homelab-webcam.service" tmp state lines="" i pid
   if [ -z "${WEBCAM_DEVICE:-}" ]; then
     if [ -e "$unit" ]; then
       systemctl disable --now homelab-webcam.service 2>/dev/null || true
@@ -91,17 +91,22 @@ install_webcam() {
   # est vérifié juste après.
   systemctl enable homelab-webcam.service || true
   systemctl restart homelab-webcam.service || true
-  # Qui écoute sur ce port ? Il faut ustreamer, et seulement sur 127.0.0.1 :
-  # sinon le tunnel de l'application mènerait à un autre programme.
+  # Qui écoute sur ce port ? Il faut LE ustreamer de ce service (même numéro
+  # de processus), et seulement sur 127.0.0.1 : sinon le tunnel de
+  # l'application mènerait à un autre programme, ou à un autre ustreamer
+  # lancé à la main, avec d'autres réglages.
   for i in 1 2 3 4 5 6 7 8 9 10; do
     lines=$(ss -Hltnp "sport = :$WEBCAM_PORT" 2>/dev/null || true)
     [ -n "$lines" ] && break
     sleep 0.5
   done
   state=$(systemctl is-active homelab-webcam.service 2>/dev/null || true)
-  if [ -n "$lines" ] && { grep -qv '"ustreamer"' <<< "$lines" || awk '{print $4}' <<< "$lines" | grep -qvxF "127.0.0.1:$WEBCAM_PORT"; }; then
+  pid=$(systemctl show -p MainPID --value homelab-webcam.service 2>/dev/null || true)
+  [[ $pid =~ ^[1-9][0-9]{0,9}$ ]] || pid=""
+  if [ -n "$lines" ] && { [ -z "$pid" ] || grep -qv "pid=$pid," <<< "$lines" \
+       || awk '{print $4}' <<< "$lines" | grep -qvxF "127.0.0.1:$WEBCAM_PORT"; }; then
     systemctl stop homelab-webcam.service 2>/dev/null || true
-    die "le port $WEBCAM_PORT est déjà pris par un autre programme ($(awk '{print $4, $6}' <<< "$lines" | paste -sd ' ' -)) : choisis un autre WEBCAM_PORT"
+    die "le port $WEBCAM_PORT est déjà pris par un autre programme ($(awk '{print $4, $6}' <<< "$lines" | paste -sd ' ' -)) : arrête-le (sudo kill NUMÉRO, le pid=… affiché ; ou désactive son service), ou choisis un autre WEBCAM_PORT"
   fi
   if [ "$state" = "active" ] && [ -n "$lines" ]; then
     ok "webcam : ustreamer en écoute sur 127.0.0.1:$WEBCAM_PORT seulement ($WEBCAM_DEVICE, ${WEBCAM_RESOLUTION:-1280x720}, ${WEBCAM_FPS:-5} images/s)"

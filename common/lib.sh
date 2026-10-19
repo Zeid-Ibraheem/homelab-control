@@ -5,7 +5,7 @@
 # propriété de root.
 # =============================================================================
 
-HOMELAB_VERSION="0.8.0"
+HOMELAB_VERSION="0.8.1"
 HOMELAB_API=1
 
 # Sources du système (constantes, modifiables seulement dans une copie de test).
