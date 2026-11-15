@@ -10,7 +10,7 @@
 #                                          autorise la clé du terminal de l'application
 #                                          sur TON compte (accès complet), depuis les
 #                                          adresses du serveur (TOWER_KEY_FROM) seulement
-#   sudo tower/install.sh uninstall        retire scripts, minuteur, règle sudo et réglage SSH
+#   sudo tower/install.sh uninstall        retire scripts, minuteurs, règle sudo et réglage SSH
 #
 # Aucune valeur personnelle ici : tout vient de /etc/homelab/homelab.conf.
 # =============================================================================
@@ -29,6 +29,7 @@ SSHD_DROPIN=/etc/ssh/sshd_config.d/50-homelab-tower.conf
 UNITDIR=/etc/systemd/system
 LOGDIR=/var/log/homelab
 ROOT_STATE=/var/lib/homelab-autooff
+BACKUP_STATE=/var/lib/homelab-backup
 
 say() { printf '%s\n' "$*"; }
 ok()  { printf '✓ %s\n' "$*"; }
@@ -92,6 +93,21 @@ check_conf() {
   if [ -n "${TOWER_KEY_FROM:-}" ] && ! hl_valid_from "$TOWER_KEY_FROM"; then
     say "  ✗ TOWER_KEY_FROM invalide"; bad=1
   fi
+  if [ -n "${BACKUP_DIR:-}" ]; then
+    hl_valid_path "$BACKUP_DIR" || { say "  ✗ BACKUP_DIR : chemin absolu simple attendu (lettres, chiffres, « . _ / - »)"; bad=1; }
+    if [ -n "${BACKUP_MOUNT:-}" ]; then
+      hl_valid_path "$BACKUP_MOUNT" || { say "  ✗ BACKUP_MOUNT : chemin absolu simple attendu"; bad=1; }
+      case "$BACKUP_DIR/" in "$BACKUP_MOUNT"/*) ;; *) say "  ✗ BACKUP_DIR doit se trouver dans BACKUP_MOUNT"; bad=1 ;; esac
+    fi
+    check_int BACKUP_EVERY_H "${BACKUP_EVERY_H:-6}" 1 720 || bad=1
+    check_int BACKUP_KEEP "${BACKUP_KEEP:-20}" 1 1000 || bad=1
+    [[ ${SERVER_USER:-} =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { say "  ✗ SERVER_USER invalide (nécessaire à la sauvegarde)"; bad=1; }
+    hl_valid_host "${SERVER_HOST:-}" || hl_valid_ipv4 "${LINK_SERVER_IP:-}" \
+      || { say "  ✗ SERVER_HOST ou LINK_SERVER_IP nécessaire à la sauvegarde"; bad=1; }
+    case "${SERVER_HOST:-}:${SERVER_USER:-}" in
+      mon-serveur:*|*:utilisateur) say "  ✗ SERVER_HOST / SERVER_USER contiennent encore les valeurs d'exemple"; bad=1 ;;
+    esac
+  fi
   [ "$bad" -eq 0 ] || die "corrige $CONF (sudoedit $CONF), puis relance."
   grep -Eq '^[[:space:]]*AUTO_OFF_WAKE_HOURS=' "$CONF" \
     || say "  ! AUTO_OFF_WAKE_HOURS absent : une tour allumée par le serveur gardera $def h (ajoute la ligne AUTO_OFF_WAKE_HOURS=4)"
@@ -100,6 +116,44 @@ check_conf() {
     *,192.0.2.*) say "  ! TOWER_KEY_FROM contient encore l'adresse d'exemple 192.0.2.x : mets celle du serveur sur le câble" ;;
   esac
   ok "configuration valide"
+}
+
+# Sauvegarde du serveur sur un disque de la tour (BACKUP_DIR), ou rien si la
+# valeur est vide. La tour a sa propre clé, créée ici : sur le serveur, elle ne
+# peut lancer que l'export en lecture seule (server/install.sh add-backup-key).
+install_backup() {
+  local svc="$UNITDIR/homelab-backup.service" tmr="$UNITDIR/homelab-backup.timer" u
+  if [ -z "${BACKUP_DIR:-}" ]; then
+    if [ -e "$tmr" ] || [ -e "$svc" ]; then
+      systemctl disable --now homelab-backup.timer 2>/dev/null || true
+      rm -f "$svc" "$tmr" "$LIBDIR/homelab-backup"
+      systemctl daemon-reload
+      ok "sauvegarde du serveur retirée (clé et sauvegardes conservées)"
+    fi
+    return 0
+  fi
+  for u in ssh ssh-keygen tar sha256sum flock mountpoint; do
+    command -v "$u" >/dev/null 2>&1 || { say "  ! sauvegarde non installée : commande « $u » introuvable"; return 0; }
+  done
+  install -d -m 700 -o root -g root "$BACKUP_STATE"
+  if [ ! -f "$BACKUP_STATE/id_backup" ]; then
+    ssh-keygen -q -t ed25519 -N "" -C homelab-sauvegarde -f "$BACKUP_STATE/id_backup"
+  fi
+  install -m 644 "$BACKUP_STATE/id_backup.pub" "$(dirname "$CONF")/backup.pub"
+  install -m 755 "$HERE/homelab-backup" "$LIBDIR/homelab-backup"
+  printf '[Unit]\nDescription=Sauvegarde du serveur sur la tour (homelab)\nAfter=network-online.target\n\n[Service]\nType=oneshot\nExecStart=%s\n' \
+    "$LIBDIR/homelab-backup" > "$svc"
+  printf '[Unit]\nDescription=Sauvegarde du serveur sur la tour (homelab)\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=30min\n\n[Install]\nWantedBy=timers.target\n' > "$tmr"
+  chmod 644 "$svc" "$tmr"
+  systemctl daemon-reload
+  systemctl enable --now homelab-backup.timer
+  ok "sauvegarde du serveur : une par ${BACKUP_EVERY_H:-6} h au plus, dans $BACKUP_DIR (${BACKUP_KEEP:-20} gardées)"
+  if [ -n "${BACKUP_MOUNT:-}" ] && ! mountpoint -q "$BACKUP_MOUNT"; then
+    say "  ! $BACKUP_MOUNT n'est pas branché pour l'instant : rien ne sera sauvegardé tant qu'il ne l'est pas"
+  fi
+  say "  Sur le serveur, autoriser la clé de la tour (une fois) :"
+  say "    sudo ~/homelab-control/server/install.sh add-backup-key \"$(cat "$(dirname "$CONF")/backup.pub")\""
+  say "  Puis, ici, premier essai : sudo $LIBDIR/homelab-backup --now"
 }
 
 do_install() {
@@ -200,6 +254,10 @@ do_install() {
   ok "SSH : le compte $HL_USER est limité au script « tour »"
   hl_sshd_filter_warning
 
+  # 8 bis. Sauvegarde du serveur (BACKUP_DIR), ou rien si la valeur est vide.
+  #        Un souci ici n'arrête pas le reste de l'installation.
+  install_backup || say "  ! sauvegarde : installation incomplète, relance après correction"
+
   # 9. L'administrateur peut lire le journal (groupe homelab)
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     usermod -aG "$HL_USER" "$SUDO_USER"
@@ -243,8 +301,9 @@ do_add_key() { # do_add_key "CLÉ PUBLIQUE"
 }
 
 do_uninstall() {
-  systemctl disable --now homelab-autooff.timer 2>/dev/null || true
-  rm -f "$UNITDIR/homelab-autooff.service" "$UNITDIR/homelab-autooff.timer"
+  systemctl disable --now homelab-autooff.timer homelab-backup.timer 2>/dev/null || true
+  rm -f "$UNITDIR/homelab-autooff.service" "$UNITDIR/homelab-autooff.timer" \
+        "$UNITDIR/homelab-backup.service" "$UNITDIR/homelab-backup.timer" "$LIBDIR/homelab-backup"
   systemctl daemon-reload
   rm -f "$BIN" "$SUDOERS" "$LIBDIR/tour-root" "$LIBDIR/homelab-autooff"
   [ -e /usr/local/bin/homelab ] || rm -rf "$LIBDIR"
@@ -252,8 +311,8 @@ do_uninstall() {
     rm -f "$SSHD_DROPIN"
     reload_ssh || true
   fi
-  ok "scripts, minuteur, règle sudo et réglage SSH retirés"
-  say "Conservés : $CONF, $LOGDIR, $ROOT_STATE, le compte $HL_USER et ses clés."
+  ok "scripts, minuteurs, règle sudo et réglage SSH retirés"
+  say "Conservés : $CONF, $LOGDIR, $ROOT_STATE, $BACKUP_STATE (clé de sauvegarde), les sauvegardes, le compte $HL_USER et ses clés."
   say "Pour tout effacer : sudo userdel -r $HL_USER; sudo groupdel $HL_USER; sudo rm -rf $LOGDIR $ROOT_STATE /etc/homelab"
 }
 

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# =============================================================================
+# homelab-backup : la tour récupère la sauvegarde du serveur et la range sur
+# son disque (BACKUP_DIR). Lancé par un minuteur systemd, en root, 5 minutes
+# après le démarrage puis toutes les 30 minutes ; ne fait quelque chose que si
+# la dernière sauvegarde réussie a plus de BACKUP_EVERY_H heures.
+#
+#   homelab-backup          selon l'âge de la dernière sauvegarde
+#   homelab-backup --now    tout de suite, quel que soit son âge
+#
+# La tour n'a aucun droit sur le serveur : sa clé ne peut y lancer que
+# l'export en lecture seule (server/homelab-backup-export).
+# Une sauvegarde = un fichier sauvegarde-AAAA-MM-JJ-HHMM.tar, lisible par
+# n'importe quel outil. Restaurer : tar -xf FICHIER -C /dossier/de/destination
+# =============================================================================
+set -euo pipefail
+umask 077
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# shellcheck source=../common/lib.sh
+. /usr/local/lib/homelab/lib.sh
+hl_load_conf /etc/homelab/homelab.conf || { echo "configuration illisible" >&2; exit 1; }
+
+STATE=/var/lib/homelab-backup
+KEY=$STATE/id_backup
+KNOWN=$STATE/known_hosts
+
+log() { logger -t homelab-backup -- "$*" 2>/dev/null || true; printf '%s\n' "$*"; }
+
+# Archive entière ? Une archive tar finit par deux blocs de zéros (1024 octets)
+# et sa taille est un multiple de 512 : une copie coupée en route ne passe pas.
+# Puis tar relit tout le contenu.
+archive_ok() {
+  local size
+  [ -s "$1" ] || return 1
+  size=$(stat -c %s "$1")
+  [ $((size % 512)) -eq 0 ] && [ "$size" -ge 1536 ] || return 1
+  [ "$(tail -c 1024 "$1" | tr -d '\0' | wc -c)" -eq 0 ] || return 1
+  tar -tf "$1" >/dev/null 2>&1
+}
+
+force=0
+case "$#:${1:-}" in
+  0:) ;;
+  1:--now) force=1 ;;
+  *) echo "usage : homelab-backup [--now]" >&2; exit 2 ;;
+esac
+
+[ -n "${BACKUP_DIR:-}" ] || exit 0
+hl_valid_path "$BACKUP_DIR" || { echo "BACKUP_DIR invalide" >&2; exit 3; }
+every=${BACKUP_EVERY_H:-6}
+keep=${BACKUP_KEEP:-20}
+hl_in_range "$every" 1 720 && hl_in_range "$keep" 1 1000 || { echo "BACKUP_EVERY_H ou BACKUP_KEEP invalide" >&2; exit 3; }
+[[ ${SERVER_USER:-} =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "SERVER_USER invalide" >&2; exit 3; }
+
+# Le disque doit être branché : sinon on écrirait sur le disque du système.
+if [ -n "${BACKUP_MOUNT:-}" ]; then
+  hl_valid_path "$BACKUP_MOUNT" || { echo "BACKUP_MOUNT invalide" >&2; exit 3; }
+  case "$BACKUP_DIR/" in "$BACKUP_MOUNT"/*) ;; *) echo "BACKUP_DIR doit se trouver dans BACKUP_MOUNT" >&2; exit 3 ;; esac
+  if ! mountpoint -q "$BACKUP_MOUNT"; then
+    [ "$force" -eq 0 ] || echo "disque de sauvegarde non branché ($BACKUP_MOUNT)" >&2
+    exit 0
+  fi
+fi
+
+mkdir -p "$BACKUP_DIR"
+exec 9> "$STATE/lock"
+flock -n 9 || exit 0
+
+stamp="$BACKUP_DIR/.derniere-reussite"
+now=$(date +%s)
+last=0
+if [ -f "$stamp" ] && IFS= read -r v < "$stamp" && hl_valid_uint "$v"; then last=$v; fi
+if [ "$force" -eq 0 ] && [ $((now - last)) -lt $((every * 3600)) ]; then exit 0; fi
+
+tmp="$BACKUP_DIR/.en-cours.tar"
+trap 'rm -f "$tmp"' EXIT
+got=0
+for host in "${LINK_SERVER_IP:-}" "${SERVER_HOST:-}"; do
+  [ -n "$host" ] || continue
+  hl_valid_ipv4 "$host" || hl_valid_host "$host" || continue
+  # Par le câble d'abord, sinon par le VPN. HostKeyAlias : une seule empreinte
+  # enregistrée pour le serveur, vérifiée par les deux chemins.
+  if ssh -4 -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 \
+         -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KNOWN" \
+         -o HostKeyAlias=homelab-server -o LogLevel=ERROR \
+         "$SERVER_USER@$host" backup > "$tmp" && archive_ok "$tmp"; then
+    got=1
+    break
+  fi
+done
+if [ "$got" -ne 1 ]; then
+  log "échec : serveur injoignable, clé non autorisée ou archive incomplète"
+  exit 1
+fi
+
+sum=$(sha256sum "$tmp" | cut -d' ' -f1)
+prev=""
+[ -f "$BACKUP_DIR/.dernier-sha256" ] && IFS= read -r prev < "$BACKUP_DIR/.dernier-sha256" || true
+if [ "$sum" = "$prev" ]; then
+  rm -f "$tmp"
+  log "rien de nouveau depuis la dernière sauvegarde"
+else
+  name="sauvegarde-$(date +%Y-%m-%d-%H%M%S).tar"
+  [ ! -e "$BACKUP_DIR/$name" ] || name="${name%.tar}-$$.tar"   # jamais d'écrasement
+  mv -f "$tmp" "$BACKUP_DIR/$name"
+  printf '%s\n' "$sum" > "$BACKUP_DIR/.dernier-sha256"
+  log "nouvelle sauvegarde : $name ($(du -h "$BACKUP_DIR/$name" | cut -f1))"
+  # Ne garder que les BACKUP_KEEP plus récentes (le nom contient la date).
+  find "$BACKUP_DIR" -maxdepth 1 -type f -name 'sauvegarde-*.tar' | sort | head -n -"$keep" | while IFS= read -r old; do
+    rm -f -- "$old"
+  done
+fi
+printf '%s\n' "$now" > "$stamp"

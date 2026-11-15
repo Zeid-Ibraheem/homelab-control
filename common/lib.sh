@@ -29,7 +29,8 @@ LINK_SERVER_IP LINK_TOWER_IP TOWER_MAC AUTO_OFF_DEFAULT_HOURS AUTO_OFF_WAKE_HOUR
 AUTO_OFF_EXTEND_HOURS AUTO_OFF_MAX_HOURS AUTO_OFF_SESSION_GRACE_MIN SERVER_SERVICES \
 TOWER_SERVICES SERVER_SMART_DEVICES TOWER_SMART_DEVICES ACTION_LOG ACTIONS_KEY_FROM \
 TOWER_KEY_FROM WAKE_COOLDOWN_S WAKE_SCHEDULE WEBCAM_PORT WEBCAM_DEVICE WEBCAM_RESOLUTION \
-WEBCAM_FPS SERVER_RESTARTABLE TOWER_RESTARTABLE LINK_WATCHDOG NET_WATCHDOG_CONNECTION"
+WEBCAM_FPS SERVER_RESTARTABLE TOWER_RESTARTABLE LINK_WATCHDOG NET_WATCHDOG_CONNECTION \
+BACKUP_SOURCES BACKUP_KEY_FROM BACKUP_DIR BACKUP_MOUNT BACKUP_EVERY_H BACKUP_KEEP"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 # Lue SANS être exécutée : uniquement des lignes CLÉ="valeur" ou CLÉ=valeur,
@@ -67,6 +68,8 @@ hl_valid_video() { [[ ${1:-} =~ ^/dev/(video[0-9]{1,2}|v4l/by-(id|path)/[A-Za-z0
 # Nom d'une connexion NetworkManager (nmcli connection show) : lettres, chiffres,
 # espaces et « . _ - », sans espace au début.
 hl_valid_nm_connection() { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9\ ._-]{0,63}$ ]]; }
+# Chemin absolu simple, sans « .. » : dossiers et fichiers de la sauvegarde.
+hl_valid_path() { [[ ${1:-} =~ ^/[A-Za-z0-9._/-]{1,200}$ ]] && [[ ! $1 =~ (^|/)\.\.(/|$) ]]; }
 hl_valid_resolution() { [[ ${1:-} =~ ^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$ ]]; }
 # Service redémarrable à distance : minuscules, chiffres et tirets (les seuls
 # caractères qu'une commande reçue par SSH peut contenir), 48 au plus pour que
@@ -596,8 +599,8 @@ hl_restart_reply() { # hl_restart_reply AIDE_ROOT SERVICE
 # seulement depuis les adresses FROM, avec les options OPTIONS. Écrit avec les
 # droits de ce compte, jamais en root dans son dossier. Une ligne existante de
 # la même clé est remplacée : relancer la commande met ses options à jour.
-hl_add_terminal_key() { # hl_add_terminal_key "CLÉ PUBLIQUE" "FROM" "OPTIONS"
-  local key=$1 from=$2 opts=$3 user=${SUDO_USER:-} home tmp fp blob
+hl_add_terminal_key() { # hl_add_terminal_key "CLÉ PUBLIQUE" "FROM" "OPTIONS" [NOM AFFICHÉ]
+  local key=$1 from=$2 opts=$3 label=${4:-clé du terminal} user=${SUDO_USER:-} home tmp fp blob
   local re='^(ssh-ed25519|sk-ssh-ed25519@openssh\.com|ecdsa-sha2-nistp256|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [A-Za-z0-9@._-]{1,64})?$'
   key=$(printf '%s' "$key" | tr -d '\r\n')
   if ! [[ $key =~ $re ]]; then
@@ -631,7 +634,7 @@ hl_add_terminal_key() { # hl_add_terminal_key "CLÉ PUBLIQUE" "FROM" "OPTIONS"
     printf "%s %s\n" "$3" "$4" >> "$f.new"
     mv -f "$f.new" "$f"
   ' sh "$home" "$blob" "$opts" "$key" || return 1
-  printf '✓ clé du terminal autorisée pour %s : %s\n' "$user" "$fp"
+  printf '✓ %s autorisée pour %s : %s\n' "$label" "$user" "$fp"
   if [ -n "$from" ]; then
     printf '  acceptée seulement depuis : %s\n' "$from"
   else

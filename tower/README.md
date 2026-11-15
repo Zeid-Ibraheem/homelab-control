@@ -158,6 +158,34 @@ TOWER_RESTARTABLE="cups"
 
 L'installation ajoute à la règle `sudo` une entrée `tour-root restart cups` par service : `sudo` refuse tout autre nom, et `tour-root` revérifie la liste. Le serveur ne fait que relayer : c'est la configuration de la tour qui décide. Mêmes règles que sur le serveur (voir [`server/README.md`](../server/README.md#redémarrer-un-service)) : noms en minuscules, chiffres et tirets, présents dans `TOWER_SERVICES`, et jamais `ssh`, `sshd`, `tailscaled`, `dbus`, `polkit`, `networking`, `iwd` ni `systemd-…`.
 
+## Sauvegarde du serveur
+
+La tour garde une copie des données du serveur sur un de ses disques. Elle vient la chercher elle-même, 5 minutes après son démarrage puis toutes les 30 minutes, mais seulement si la dernière sauvegarde réussie a plus de `BACKUP_EVERY_H` heures. Une tour éteinte ne sauvegarde rien, et personne ne la réveille pour ça.
+
+Dans `/etc/homelab/homelab.conf`, sur la tour :
+
+```
+BACKUP_DIR="/mnt/disque/sauvegardes-serveur"
+BACKUP_MOUNT="/mnt/disque"
+BACKUP_EVERY_H=6
+BACKUP_KEEP=20
+```
+
+`BACKUP_MOUNT` est le point de montage du disque : s'il n'est pas branché, rien n'est écrit (jamais sur le disque du système). Le disque doit donc être monté au démarrage (`/etc/fstab`), pas seulement par le bureau à l'ouverture de session.
+
+Relancer `sudo tower/install.sh` : il crée la clé de la tour (`/var/lib/homelab-backup/id_backup`), installe le minuteur `homelab-backup.timer` et affiche la commande à lancer sur le serveur pour autoriser cette clé. Premier essai : `sudo /usr/local/lib/homelab/homelab-backup --now`.
+
+Chaque sauvegarde est un fichier `sauvegarde-AAAA-MM-JJ-HHMMSS.tar`, vérifié à l'arrivée. Une sauvegarde identique à la précédente n'est pas gardée en double. Les `BACKUP_KEEP` plus récentes sont conservées. Le journal : `journalctl -t homelab-backup`.
+
+Restaurer, sur n'importe quelle machine :
+
+```
+tar -tf sauvegarde-2026-01-31-183000.tar | head      # voir ce qu'elle contient
+tar -xf sauvegarde-2026-01-31-183000.tar -C /tmp/restauration
+```
+
+Les fichiers ressortent avec leur chemin d'origine, sous le dossier choisi. Limite à connaître : une base de données modifiée pendant la copie peut être incohérente dans cette sauvegarde-là ; la suivante la reprend.
+
 ## En cas de problème
 
 | Symptôme | Où regarder |

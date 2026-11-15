@@ -11,6 +11,7 @@ Point d'entrée du téléphone sur le **serveur toujours allumé** (phases 1, 2,
 | `sshd-homelab.conf` | `/etc/ssh/sshd_config.d/50-homelab.conf` | Le compte `homelab` ne peut lancer que le script |
 | `homelab-webcam.service` | `/etc/systemd/system/homelab-webcam.service` | Modèle du serveur vidéo de la webcam (ustreamer), en écoute locale uniquement, si `WEBCAM_DEVICE` est rempli |
 | `homelab-watchdog` | `/usr/local/lib/homelab/homelab-watchdog` | Surveillances lancées par des minuteurs : relance du câble vers la tour, relance du Wi-Fi puis redémarrage si Internet reste coupé |
+| `homelab-backup-export` | `/usr/local/lib/homelab/homelab-backup-export` | Seule commande permise à la clé de sauvegarde de la tour : une archive, en lecture seule, de `BACKUP_SOURCES` |
 | `install.sh` | | Installation, ajout d'une clé (« actions » ou terminal), désinstallation |
 
 La bibliothèque commune ([`common/lib.sh`](../common/lib.sh)) est installée dans `/usr/local/lib/homelab/lib.sh`.
@@ -206,6 +207,23 @@ NET_WATCHDOG_CONNECTION="nom-de-ta-connexion"
 - `NET_WATCHDOG_CONNECTION` : le nom de la connexion du serveur, lu dans `nmcli connection show`. Chaque minute, le serveur vérifie qu'Internet répond (`homelab-net-watchdog.timer`). Après 5 et 15 minutes de coupure, il coupe puis rallume le Wi-Fi et relance cette connexion. Après 30 minutes, il redémarre, une fois par 6 heures au plus.
 
 Puis relancer `sudo ~/homelab-control/server/install.sh`. Une valeur vide retire le minuteur. Le journal : `journalctl -t homelab-watchdog`.
+
+## Sauvegarde
+
+Le serveur ne sauvegarde rien lui-même : c'est la tour qui vient chercher, quand elle est allumée (voir [`tower/README.md`](../tower/README.md#sauvegarde-du-serveur)). Côté serveur, il suffit de dire quoi exporter, dans `/etc/homelab/homelab.conf` :
+
+```
+BACKUP_SOURCES="/chemin/vers/tes/donnees /etc/homelab/homelab.conf"
+BACKUP_KEY_FROM="192.0.2.2,100.64.0.0/10"
+```
+
+Puis relancer `sudo ~/homelab-control/server/install.sh`, et autoriser la clé affichée par l'installation de la tour :
+
+```
+sudo ~/homelab-control/server/install.sh add-backup-key "ssh-ed25519 AAAA… homelab-sauvegarde"
+```
+
+Cette clé est posée sur ton compte, mais elle ne donne ni session, ni tunnel, ni choix de commande : elle lance `homelab-backup-export`, qui envoie une archive des chemins de `BACKUP_SOURCES`, et rien d'autre. Seuls les fichiers lisibles par ton compte sont exportés.
 
 ## Allumage programmé
 

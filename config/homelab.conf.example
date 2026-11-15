@@ -54,6 +54,24 @@ NET_WATCHDOG_CONNECTION=""         # nom de la connexion NetworkManager du serve
                                    # puis le serveur redémarre après 30 min (une fois
                                    # par 6 h au plus). Vide = aucune surveillance
 
+# ── Sauvegarde du serveur sur la tour ──────────────────────────────────────
+# La tour vient chercher la sauvegarde quand elle est allumée ; personne ne
+# réveille personne. Voir tower/README.md, « Sauvegarde du serveur ».
+# Sur le serveur :
+BACKUP_SOURCES=""                  # dossiers et fichiers à sauvegarder, séparés par des
+                                   # espaces (chemins absolus, lisibles par ton compte).
+                                   # Vide = le serveur n'exporte rien
+BACKUP_KEY_FROM="192.0.2.2,100.64.0.0/10"   # adresses d'où la clé de sauvegarde de
+                                   # la tour est acceptée (câble, VPN)
+# Sur la tour :
+BACKUP_DIR=""                      # dossier des sauvegardes, par exemple
+                                   # /mnt/disque/sauvegardes-serveur. Vide = aucune
+BACKUP_MOUNT=""                    # point de montage du disque (ex. /mnt/disque) : sans
+                                   # lui, rien n'est écrit (jamais sur le disque système)
+BACKUP_EVERY_H=6                   # une sauvegarde par tranche de N heures au plus
+BACKUP_KEEP=20                     # nombre de sauvegardes gardées (les identiques à la
+                                   # précédente ne sont pas gardées en double)
+
 # ── Allumage programmé de la tour (utilisé sur le serveur) ─────────────────
 WAKE_SCHEDULE=""                   # vide = aucun. Format systemd (OnCalendar),
                                    # plusieurs dates séparées par « ; ». Exemple :

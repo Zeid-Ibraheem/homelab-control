@@ -11,6 +11,10 @@
 #                                           autorise la clé du terminal de l'application
 #                                           sur TON compte (accès complet), depuis les
 #                                           adresses de ACTIONS_KEY_FROM seulement
+#   sudo server/install.sh add-backup-key "CLÉ"
+#                                           autorise la clé de sauvegarde de la tour sur TON
+#                                           compte : elle ne peut lancer que l'export en
+#                                           lecture seule de BACKUP_SOURCES
 #   sudo server/install.sh uninstall        retire scripts, minuteurs, surveillances, webcam, règle sudo et réglage SSH
 #
 # Aucune valeur personnelle ici : tout vient de /etc/homelab/homelab.conf.
@@ -279,6 +283,12 @@ check_conf() {
     hl_valid_nm_connection "$NET_WATCHDOG_CONNECTION" \
       || { say "  ✗ NET_WATCHDOG_CONNECTION : nom d'une connexion NetworkManager (nmcli connection show)"; bad=1; }
   fi
+  for u in ${BACKUP_SOURCES:-}; do
+    hl_valid_path "$u" || { say "  ✗ BACKUP_SOURCES : « $u » n'est pas un chemin absolu simple (lettres, chiffres, « . _ / - »)"; bad=1; }
+  done
+  if [ -n "${BACKUP_KEY_FROM:-}" ] && ! hl_valid_from "$BACKUP_KEY_FROM"; then
+    say "  ✗ BACKUP_KEY_FROM invalide"; bad=1
+  fi
   [ "$bad" -eq 0 ] || die "corrige $CONF (sudoedit $CONF), puis relance."
   [ -e "/sys/class/net/$LINK_INTERFACE" ] || say "  ! l'interface $LINK_INTERFACE n'est pas branchée pour l'instant"
   if [ -n "${WEBCAM_DEVICE:-}" ] && [ ! -e "$WEBCAM_DEVICE" ]; then
@@ -346,6 +356,7 @@ do_install() {
   install -m 644 "$REPO/common/lib.sh" "$LIBDIR/lib.sh"
   install -m 755 "$HERE/homelab-root" "$LIBDIR/homelab-root"
   install -m 755 "$HERE/homelab-watchdog" "$LIBDIR/homelab-watchdog"
+  install -m 755 "$HERE/homelab-backup-export" "$LIBDIR/homelab-backup-export"
   install -m 755 "$HERE/homelab" "$BIN"
   ok "scripts installés"
 
@@ -485,7 +496,7 @@ do_uninstall() {
       systemctl daemon-reload
     fi
   done
-  rm -f "$BIN" "$SUDOERS" "$LIBDIR/homelab-root" "$LIBDIR/homelab-watchdog"
+  rm -f "$BIN" "$SUDOERS" "$LIBDIR/homelab-root" "$LIBDIR/homelab-watchdog" "$LIBDIR/homelab-backup-export"
   [ -e /usr/local/bin/tour ] || rm -rf "$LIBDIR"     # tour installée ici aussi : on garde lib.sh
   if [ -f "$SSHD_DROPIN" ]; then
     rm -f "$SSHD_DROPIN"
@@ -506,6 +517,14 @@ case "${1:-install}" in
              [ "$#" -eq 2 ] || die "usage : sudo $0 add-terminal-key \"ssh-ed25519 AAAA… homelab-terminal\""
              hl_load_conf "$CONF" || die "configuration illisible : $CONF"
              hl_add_terminal_key "$2" "${ACTIONS_KEY_FROM:-}" "restrict,pty,port-forwarding" || exit 1 ;;
+  add-backup-key)
+             # Clé de la tour, sur le compte de l'administrateur : aucune session,
+             # aucun tunnel, une seule commande possible (l'export en lecture seule).
+             [ "$#" -eq 2 ] || die "usage : sudo $0 add-backup-key \"ssh-ed25519 AAAA… homelab-sauvegarde\""
+             hl_load_conf "$CONF" || die "configuration illisible : $CONF (installe d'abord : sudo $0)"
+             [ -x "$LIBDIR/homelab-backup-export" ] || die "installe d'abord : sudo $0"
+             [ -n "${BACKUP_SOURCES:-}" ] || die "remplis d'abord BACKUP_SOURCES dans $CONF"
+             hl_add_terminal_key "$2" "${BACKUP_KEY_FROM:-}" "restrict,command=\"$LIBDIR/homelab-backup-export\"" "clé de sauvegarde" || exit 1 ;;
   uninstall) do_uninstall ;;
-  *)         die "usage : $0 [install | add-key \"CLÉ\" | add-terminal-key \"CLÉ\" | uninstall]" ;;
+  *)         die "usage : $0 [install | add-key \"CLÉ\" | add-terminal-key \"CLÉ\" | add-backup-key \"CLÉ\" | uninstall]" ;;
 esac

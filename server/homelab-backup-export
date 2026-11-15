@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# =============================================================================
+# homelab-backup-export : envoie sur la sortie standard une archive tar des
+# dossiers à sauvegarder (BACKUP_SOURCES). C'est la SEULE chose que la clé de
+# sauvegarde de la tour peut lancer sur le serveur (commande forcée dans
+# authorized_keys, posée par « install.sh add-backup-key ») : lecture seule,
+# aucun argument, la demande reçue par SSH est ignorée.
+#
+# Lancé avec le compte de l'administrateur du serveur, sans droits root : ne
+# sont sauvegardés que les fichiers que ce compte peut lire.
+# =============================================================================
+set -euo pipefail
+umask 077
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# shellcheck source=../common/lib.sh
+. /usr/local/lib/homelab/lib.sh
+hl_load_conf /etc/homelab/homelab.conf \
+  || { echo "configuration illisible (ton compte doit être dans le groupe homelab)" >&2; exit 1; }
+
+paths=()
+for p in ${BACKUP_SOURCES:-}; do
+  hl_valid_path "$p" || { echo "BACKUP_SOURCES : chemin invalide" >&2; exit 3; }
+  if [ -e "$p" ]; then paths+=("${p#/}"); else echo "absent, ignoré : $p" >&2; fi
+done
+[ "${#paths[@]}" -gt 0 ] || { echo "BACKUP_SOURCES est vide, ou rien n'existe" >&2; exit 3; }
+
+# --sort=name : même ordre à chaque fois, donc deux sauvegardes sans changement
+# sont identiques octet pour octet (la tour s'en sert pour ne pas les garder en double).
+rc=0
+tar --create --file=- --format=gnu --sort=name --numeric-owner \
+    --warning=no-file-changed --warning=no-file-removed -C / -- "${paths[@]}" || rc=$?
+# 1 = un fichier a changé pendant la lecture : l'archive est complète quand même.
+[ "$rc" -le 1 ] || exit "$rc"
+
+# Trace de la dernière sauvegarde envoyée, lisible sur le serveur.
+state="${HOME:-/nonexistent}/.local/state/homelab"
+if mkdir -p "$state" 2>/dev/null; then date +%s > "$state/last-backup-export" 2>/dev/null || true; fi
