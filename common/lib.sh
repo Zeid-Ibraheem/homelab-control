@@ -29,7 +29,7 @@ LINK_SERVER_IP LINK_TOWER_IP TOWER_MAC AUTO_OFF_DEFAULT_HOURS AUTO_OFF_WAKE_HOUR
 AUTO_OFF_EXTEND_HOURS AUTO_OFF_MAX_HOURS AUTO_OFF_SESSION_GRACE_MIN SERVER_SERVICES \
 TOWER_SERVICES SERVER_SMART_DEVICES TOWER_SMART_DEVICES ACTION_LOG ACTIONS_KEY_FROM \
 TOWER_KEY_FROM WAKE_COOLDOWN_S WAKE_SCHEDULE WEBCAM_PORT WEBCAM_DEVICE WEBCAM_RESOLUTION \
-WEBCAM_FPS SERVER_RESTARTABLE TOWER_RESTARTABLE"
+WEBCAM_FPS SERVER_RESTARTABLE TOWER_RESTARTABLE LINK_WATCHDOG NET_WATCHDOG_CONNECTION"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 # Lue SANS être exécutée : uniquement des lignes CLÉ="valeur" ou CLÉ=valeur,
@@ -64,6 +64,9 @@ hl_valid_disk()  { [[ ${1:-} =~ ^/dev/(nvme[0-9]{1,2}n[0-9]{1,2}|sd[a-z]{1,2}|di
 hl_valid_unit()  { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9@._-]{0,63}$ ]]; }
 # Caméra : /dev/video0, ou /dev/v4l/by-id/… (nom stable d'un branchement à l'autre).
 hl_valid_video() { [[ ${1:-} =~ ^/dev/(video[0-9]{1,2}|v4l/by-(id|path)/[A-Za-z0-9._:-]{1,120})$ ]]; }
+# Nom d'une connexion NetworkManager (nmcli connection show) : lettres, chiffres,
+# espaces et « . _ - », sans espace au début.
+hl_valid_nm_connection() { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9\ ._-]{0,63}$ ]]; }
 hl_valid_resolution() { [[ ${1:-} =~ ^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$ ]]; }
 # Service redémarrable à distance : minuscules, chiffres et tirets (les seuls
 # caractères qu'une commande reçue par SSH peut contenir), 48 au plus pour que

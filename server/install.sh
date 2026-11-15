@@ -11,7 +11,7 @@
 #                                           autorise la clé du terminal de l'application
 #                                           sur TON compte (accès complet), depuis les
 #                                           adresses de ACTIONS_KEY_FROM seulement
-#   sudo server/install.sh uninstall        retire scripts, minuteurs, webcam, règle sudo et réglage SSH
+#   sudo server/install.sh uninstall        retire scripts, minuteurs, surveillances, webcam, règle sudo et réglage SSH
 #
 # Aucune valeur personnelle ici : tout vient de /etc/homelab/homelab.conf.
 # =============================================================================
@@ -113,6 +113,44 @@ install_webcam() {
   else
     say "  ! le serveur vidéo ne démarre pas ($state) : journalctl -u homelab-webcam -n 20"
   fi
+}
+
+# Surveillances (server/homelab-watchdog), chacune avec son minuteur :
+#   LINK_WATCHDOG="yes"            relance la carte du câble vers la tour (toutes les 2 min)
+#   NET_WATCHDOG_CONNECTION="nom"  relance le Wi-Fi, puis redémarre si Internet reste coupé (chaque minute)
+# Valeur vide ou « no » : le minuteur correspondant est retiré.
+install_watchdog() { # install_watchdog NOM MODE ACTIF(0|1) DÉLAI_AU_DÉMARRAGE INTERVALLE DESCRIPTION
+  local name=$1 mode=$2 on=$3 boot=$4 every=$5 desc=$6
+  local svc="$UNITDIR/$name.service" tmr="$UNITDIR/$name.timer"
+  if [ "$on" -ne 1 ]; then
+    if [ -e "$tmr" ] || [ -e "$svc" ]; then
+      systemctl disable --now "$name.timer" 2>/dev/null || true
+      rm -f "$svc" "$tmr"
+      systemctl daemon-reload
+      ok "surveillance retirée : $name"
+    fi
+    return 0
+  fi
+  printf '[Unit]\nDescription=%s (homelab)\n\n[Service]\nType=oneshot\nExecStart=%s %s\nStateDirectory=homelab-watchdog\nStateDirectoryMode=0700\n' \
+    "$desc" "$LIBDIR/homelab-watchdog" "$mode" > "$svc"
+  printf '[Unit]\nDescription=%s (homelab)\n\n[Timer]\nOnBootSec=%s\nOnUnitActiveSec=%s\n\n[Install]\nWantedBy=timers.target\n' \
+    "$desc" "$boot" "$every" > "$tmr"
+  chmod 644 "$svc" "$tmr"
+  systemctl daemon-reload
+  systemctl enable --now "$name.timer"
+  ok "surveillance active : $name (toutes les $every)"
+}
+
+install_watchdogs() {
+  local link=0 net=0
+  [ "${LINK_WATCHDOG:-}" = "yes" ] && link=1
+  [ -n "${NET_WATCHDOG_CONNECTION:-}" ] && net=1
+  if [ "$net" -eq 1 ] && ! command -v nmcli >/dev/null 2>&1; then
+    say "  ! NET_WATCHDOG_CONNECTION est rempli mais nmcli (NetworkManager) est absent : surveillance d'Internet non installée"
+    net=0
+  fi
+  install_watchdog homelab-link-watchdog link "$link" 2min 2min "Relance du câble vers la tour"
+  install_watchdog homelab-net-watchdog  net  "$net"  5min 1min "Surveillance de la connexion Internet"
 }
 
 install_wake_timer() {
@@ -233,6 +271,14 @@ check_conf() {
     hl_valid_unit "$u" || { say "  ✗ SERVER_SERVICES : « $u » n'est pas un nom de service"; bad=1; }
   done
   check_restartable SERVER_RESTARTABLE "${SERVER_RESTARTABLE:-}" "${SERVER_SERVICES:-}" || bad=1
+  case "${LINK_WATCHDOG:-}" in
+    ""|yes|no) ;;
+    *) say "  ✗ LINK_WATCHDOG : « yes », « no » ou vide"; bad=1 ;;
+  esac
+  if [ -n "${NET_WATCHDOG_CONNECTION:-}" ]; then
+    hl_valid_nm_connection "$NET_WATCHDOG_CONNECTION" \
+      || { say "  ✗ NET_WATCHDOG_CONNECTION : nom d'une connexion NetworkManager (nmcli connection show)"; bad=1; }
+  fi
   [ "$bad" -eq 0 ] || die "corrige $CONF (sudoedit $CONF), puis relance."
   [ -e "/sys/class/net/$LINK_INTERFACE" ] || say "  ! l'interface $LINK_INTERFACE n'est pas branchée pour l'instant"
   if [ -n "${WEBCAM_DEVICE:-}" ] && [ ! -e "$WEBCAM_DEVICE" ]; then
@@ -299,6 +345,7 @@ do_install() {
   install -d -m 755 "$LIBDIR"
   install -m 644 "$REPO/common/lib.sh" "$LIBDIR/lib.sh"
   install -m 755 "$HERE/homelab-root" "$LIBDIR/homelab-root"
+  install -m 755 "$HERE/homelab-watchdog" "$LIBDIR/homelab-watchdog"
   install -m 755 "$HERE/homelab" "$BIN"
   ok "scripts installés"
 
@@ -370,6 +417,9 @@ do_install() {
   # 9 bis. Serveur vidéo de la webcam (WEBCAM_DEVICE), ou rien si la valeur est vide
   install_webcam
 
+  # 9 ter. Surveillances du câble et d'Internet (LINK_WATCHDOG, NET_WATCHDOG_CONNECTION)
+  install_watchdogs
+
   # 10. L'administrateur peut lire le journal (groupe homelab)
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     usermod -aG "$HL_USER" "$SUDO_USER"
@@ -417,6 +467,7 @@ do_add_key() { # do_add_key "CLÉ PUBLIQUE"
 }
 
 do_uninstall() {
+  local u
   if [ -e "$UNITDIR/homelab-wake.timer" ]; then
     systemctl disable --now homelab-wake.timer 2>/dev/null || true
     rm -f "$UNITDIR/homelab-wake.service" "$UNITDIR/homelab-wake.timer"
@@ -427,13 +478,20 @@ do_uninstall() {
     rm -f "$UNITDIR/homelab-webcam.service"
     systemctl daemon-reload
   fi
-  rm -f "$BIN" "$SUDOERS" "$LIBDIR/homelab-root"
+  for u in homelab-link-watchdog homelab-net-watchdog; do
+    if [ -e "$UNITDIR/$u.timer" ] || [ -e "$UNITDIR/$u.service" ]; then
+      systemctl disable --now "$u.timer" 2>/dev/null || true
+      rm -f "$UNITDIR/$u.service" "$UNITDIR/$u.timer"
+      systemctl daemon-reload
+    fi
+  done
+  rm -f "$BIN" "$SUDOERS" "$LIBDIR/homelab-root" "$LIBDIR/homelab-watchdog"
   [ -e /usr/local/bin/tour ] || rm -rf "$LIBDIR"     # tour installée ici aussi : on garde lib.sh
   if [ -f "$SSHD_DROPIN" ]; then
     rm -f "$SSHD_DROPIN"
     reload_ssh || true
   fi
-  ok "scripts, minuteurs, serveur vidéo, règle sudo et réglage SSH retirés"
+  ok "scripts, minuteurs, surveillances, serveur vidéo, règle sudo et réglage SSH retirés"
   say "Conservés : $CONF, $LOGDIR, le compte $HL_USER et ses clés."
   say "Pour tout effacer : sudo userdel -r $HL_USER; sudo groupdel $HL_USER; sudo rm -rf $LOGDIR /etc/homelab"
 }

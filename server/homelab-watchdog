@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# =============================================================================
+# homelab-watchdog : deux surveillances du serveur, lancées par des minuteurs
+# systemd (en root), jamais par SSH ni par l'application.
+#
+#   link   si le câble vers la tour n'a plus de signal, relance la carte
+#          réseau (LINK_INTERFACE). Activé par LINK_WATCHDOG="yes".
+#   net    si Internet ne répond plus : après 5 et 15 minutes, coupe puis
+#          rallume le Wi-Fi et relance la connexion NET_WATCHDOG_CONNECTION ;
+#          après 30 minutes, redémarre le serveur (une fois par 6 h au plus).
+#          Activé quand NET_WATCHDOG_CONNECTION est rempli.
+#
+# Aucune valeur personnelle ici : tout vient de /etc/homelab/homelab.conf.
+# =============================================================================
+set -euo pipefail
+umask 077
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# shellcheck source=../common/lib.sh
+. /usr/local/lib/homelab/lib.sh
+hl_load_conf /etc/homelab/homelab.conf || { echo "configuration illisible" >&2; exit 1; }
+
+FAILS_FILE=/run/homelab-net-watchdog.fails
+LAST_REBOOT_FILE=/var/lib/homelab-watchdog/lastreboot
+REBOOT_EVERY_S=21600   # 6 h
+
+read_uint() { # contenu du fichier s'il s'agit d'un entier, sinon 0
+  local v=""
+  [ -f "$1" ] && [ ! -L "$1" ] && IFS= read -r v < "$1" || true
+  hl_valid_uint "$v" && printf '%s' "$v" || printf '0'
+}
+
+online() { ping -c 2 -W 5 1.1.1.1 >/dev/null 2>&1 || ping -c 2 -W 5 9.9.9.9 >/dev/null 2>&1; }
+
+do_link() {
+  hl_valid_iface "${LINK_INTERFACE:-}" || { echo "LINK_INTERFACE invalide" >&2; exit 3; }
+  [ -e "/sys/class/net/$LINK_INTERFACE" ] || exit 0          # adaptateur débranché : rien à faire
+  [ "$(cat "/sys/class/net/$LINK_INTERFACE/carrier" 2>/dev/null)" = "1" ] && exit 0
+  logger -t homelab-watchdog "câble vers la tour sans signal : relance de la carte"
+  ip link set "$LINK_INTERFACE" down
+  sleep 2
+  ip link set "$LINK_INTERFACE" up
+}
+
+do_net() {
+  local fails now prev
+  hl_valid_nm_connection "${NET_WATCHDOG_CONNECTION:-}" || { echo "NET_WATCHDOG_CONNECTION invalide" >&2; exit 3; }
+  if online; then
+    printf '0\n' > "$FAILS_FILE"
+    exit 0
+  fi
+  fails=$(( $(read_uint "$FAILS_FILE") + 1 ))
+  printf '%s\n' "$fails" > "$FAILS_FILE"
+  logger -t homelab-watchdog "pas d'Internet depuis $fails min"
+  if [ "$fails" -eq 5 ] || [ "$fails" -eq 15 ]; then
+    nmcli radio wifi off || true
+    sleep 5
+    nmcli radio wifi on || true
+    sleep 10
+    nmcli connection up "$NET_WATCHDOG_CONNECTION" || true
+  elif [ "$fails" -ge 30 ]; then
+    now=$(date +%s)
+    prev=$(read_uint "$LAST_REBOOT_FILE")
+    if [ $((now - prev)) -gt "$REBOOT_EVERY_S" ]; then
+      printf '%s\n' "$now" > "$LAST_REBOOT_FILE"
+      logger -t homelab-watchdog "pas d'Internet depuis $fails min : redémarrage"
+      systemctl reboot
+    fi
+  fi
+}
+
+case "$#:${1:-}" in
+  1:link) do_link ;;
+  1:net)  do_net ;;
+  *) echo "usage : homelab-watchdog link|net" >&2; exit 2 ;;
+esac

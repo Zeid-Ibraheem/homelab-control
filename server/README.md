@@ -10,6 +10,7 @@ Point d'entrée du téléphone sur le **serveur toujours allumé** (phases 1, 2,
 | `homelab-root` | `/usr/local/lib/homelab/homelab-root` | Les seules actions qui demandent les droits root (réveil, lecture des disques et des journaux, redémarrage d'un service autorisé), permises par `sudo` avec des arguments fixes |
 | `sshd-homelab.conf` | `/etc/ssh/sshd_config.d/50-homelab.conf` | Le compte `homelab` ne peut lancer que le script |
 | `homelab-webcam.service` | `/etc/systemd/system/homelab-webcam.service` | Modèle du serveur vidéo de la webcam (ustreamer), en écoute locale uniquement, si `WEBCAM_DEVICE` est rempli |
+| `homelab-watchdog` | `/usr/local/lib/homelab/homelab-watchdog` | Surveillances lancées par des minuteurs : relance du câble vers la tour, relance du Wi-Fi puis redémarrage si Internet reste coupé |
 | `install.sh` | | Installation, ajout d'une clé (« actions » ou terminal), désinstallation |
 
 La bibliothèque commune ([`common/lib.sh`](../common/lib.sh)) est installée dans `/usr/local/lib/homelab/lib.sh`.
@@ -191,6 +192,20 @@ La plupart des webcams compressent elles-mêmes leurs images : ustreamer les tra
 Pour la redémarrer depuis l'application si elle se fige : ajouter `homelab-webcam` à `SERVER_SERVICES` et à `SERVER_RESTARTABLE`.
 
 Un autre serveur vidéo reste possible : `WEBCAM_DEVICE` vide et `WEBCAM_PORT` seul. Il doit alors n'écouter que sur `127.0.0.1` (vérifier avec `ss -ltnp`). L'application lit le flux MJPEG à l'adresse `/stream`, celle d'ustreamer. Avec `WEBCAM_PORT` vide, plus aucun tunnel n'est possible.
+
+## Surveillances
+
+Un serveur qu'on ne peut plus joindre ne sert plus à rien, et personne n'est sur place pour le relancer. Deux surveillances facultatives, dans `/etc/homelab/homelab.conf` :
+
+```
+LINK_WATCHDOG="yes"
+NET_WATCHDOG_CONNECTION="nom-de-ta-connexion"
+```
+
+- `LINK_WATCHDOG="yes"` : toutes les 2 minutes, si le câble vers la tour n'a plus de signal, la carte `LINK_INTERFACE` est relancée (minuteur `homelab-link-watchdog.timer`).
+- `NET_WATCHDOG_CONNECTION` : le nom de la connexion du serveur, lu dans `nmcli connection show`. Chaque minute, le serveur vérifie qu'Internet répond (`homelab-net-watchdog.timer`). Après 5 et 15 minutes de coupure, il coupe puis rallume le Wi-Fi et relance cette connexion. Après 30 minutes, il redémarre, une fois par 6 heures au plus.
+
+Puis relancer `sudo ~/homelab-control/server/install.sh`. Une valeur vide retire le minuteur. Le journal : `journalctl -t homelab-watchdog`.
 
 ## Allumage programmé
 

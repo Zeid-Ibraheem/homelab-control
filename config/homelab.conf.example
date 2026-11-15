@@ -45,6 +45,15 @@ WEBCAM_RESOLUTION="1280x720"       # demandée à la caméra (elle prend la plus
 WEBCAM_FPS=5                       # images par seconde ; en 1280x720, compter environ
                                    # 25 Mo par minute regardée (estimation)
 
+# ── Surveillances du serveur (utilisé sur le serveur) ──────────────────────
+LINK_WATCHDOG=""                   # "yes" : toutes les 2 minutes, relance la carte
+                                   # LINK_INTERFACE si le câble n'a plus de signal
+NET_WATCHDOG_CONNECTION=""         # nom de la connexion NetworkManager du serveur
+                                   # (nmcli connection show). Rempli : si Internet ne
+                                   # répond plus, le Wi-Fi est relancé après 5 et 15 min,
+                                   # puis le serveur redémarre après 30 min (une fois
+                                   # par 6 h au plus). Vide = aucune surveillance
+
 # ── Allumage programmé de la tour (utilisé sur le serveur) ─────────────────
 WAKE_SCHEDULE=""                   # vide = aucun. Format systemd (OnCalendar),
                                    # plusieurs dates séparées par « ; ». Exemple :
